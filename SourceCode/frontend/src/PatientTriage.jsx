@@ -16,6 +16,12 @@ const SESSION_DURATION_MS = 300000; // 5 minutes hard limit
 const SESSION_WARNING_MS = 30000; // warn user 30 seconds before timeout
 const TRIAGE_RESULT_STORAGE_KEY = "patient-triage-analysis";
 
+console.log("API_BASE_URL:", API_BASE_URL);
+console.log("AGORA_APP_ID:", AGORA_APP_ID);
+console.log("AGORA_CHANNEL:", AGORA_CHANNEL);
+console.log("ENABLE_CONVERSATIONAL_AI:", ENABLE_CONVERSATIONAL_AI);
+console.log("TURNSTILE_SITE_KEY:", TURNSTILE_SITE_KEY);
+
 function PatientTriage({ onNewCase }) {
 	const [isListening, setIsListening] = useState(false);
 	const [chatLog, setChatLog] = useState([]);
