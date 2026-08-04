@@ -3,13 +3,13 @@ import AgoraRTC from "agora-rtc-sdk-ng";
 import UrgencyBadge from "./components/UrgencyBadge";
 
 const API_BASE_URL =
-	import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
-const AGORA_APP_ID = import.meta.env.VITE_AGORA_APP_ID;
-const AGORA_CHANNEL = import.meta.env.VITE_AGORA_CHANNEL || "triage-room";
-const AGORA_TOKEN = import.meta.env.VITE_AGORA_TOKEN || null;
+	import.meta.env.API_BASE_URL || "http://localhost:4000";
+const AGORA_APP_ID = import.meta.env.AGORA_APP_ID;
+const AGORA_CHANNEL = import.meta.env.AGORA_CHANNEL || "triage-room";
+const AGORA_TOKEN = import.meta.env.AGORA_TOKEN || null;
 const ENABLE_CONVERSATIONAL_AI =
 	String(
-		import.meta.env.VITE_ENABLE_CONVERSATIONAL_AI || "false",
+		import.meta.env.ENABLE_CONVERSATIONAL_AI || "false",
 	).toLowerCase() === "true";
 const CAE_START_TIMEOUT_MS = 12000;
 const SESSION_DURATION_MS = 300000; // 5 minutes hard limit
@@ -267,7 +267,7 @@ function PatientTriage({ onNewCase }) {
 			console.warn("Agora APP ID missing — cannot continue without Agora.");
 			setCaeStatus("disabled");
 			setError(
-				"Agora APP ID is not configured. Set VITE_AGORA_APP_ID in .env.",
+				"Agora APP ID is not configured. Set AGORA_APP_ID in .env.",
 			);
 			return;
 		}
