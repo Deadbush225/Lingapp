@@ -12,6 +12,8 @@ const ENABLE_CONVERSATIONAL_AI =
 		import.meta.env.VITE_ENABLE_CONVERSATIONAL_AI || "false",
 	).toLowerCase() === "true";
 const CAE_START_TIMEOUT_MS = 12000;
+const SESSION_DURATION_MS = 300000; // 5 minutes hard limit
+const SESSION_WARNING_MS = 30000; // warn user 30 seconds before timeout
 const TRIAGE_RESULT_STORAGE_KEY = "patient-triage-analysis";
 
 function PatientTriage({ onNewCase }) {
@@ -23,11 +25,18 @@ function PatientTriage({ onNewCase }) {
 	const [caeErrorText, setCaeErrorText] = useState("");
 	const [isTriageComplete, setIsTriageComplete] = useState(false);
 	const [isAborted, setIsAborted] = useState(false);
+	const [sessionTimeLeft, setSessionTimeLeft] = useState(null);
+	const [isSessionEnding, setIsSessionEnding] = useState(false);
+	const [isGeneratingReport, setIsGeneratingReport] = useState(false);
 
 	const agoraClientRef = useRef(null);
+	const reportRef = useRef(null);
+	const sessionTimerRef = useRef(null);
+	const sessionCountdownRef = useRef(null);
 	const localTrackRef = useRef(null);
 	const caeAgentIdRef = useRef(null);
 	const chatLogRef = useRef(null);
+	const messagesEndRef = useRef(null);
 	const isStreamingRef = useRef(false);
 	const latestChatLogRef = useRef([]);
 	const streamChunksRef = useRef({});
@@ -64,12 +73,21 @@ function PatientTriage({ onNewCase }) {
 		};
 	}, []);
 
-	// Auto-scroll chat log to the latest message
+	// Auto-scroll chat log to the latest message smoothly
 	useEffect(() => {
-		if (chatLogRef.current) {
-			chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight;
-		}
+		messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
 	}, [chatLog]);
+
+	useEffect(() => {
+		if (isGeneratingReport || analysis) {
+			setTimeout(() => {
+				reportRef.current?.scrollIntoView({
+					behavior: "smooth",
+					block: "start",
+				});
+			}, 100);
+		}
+	}, [isGeneratingReport, analysis]);
 
 	const deleteTriageResult = async () => {
 		if (analysis?.caseId) {
@@ -188,6 +206,62 @@ function PatientTriage({ onNewCase }) {
 		}
 	};
 
+	const startSessionTimer = () => {
+		// Clear any previous timers
+		clearTimeout(sessionTimerRef.current);
+		clearInterval(sessionCountdownRef.current);
+		setSessionTimeLeft(SESSION_DURATION_MS);
+		setIsSessionEnding(false);
+
+		// Update the countdown display every second
+		const startTime = Date.now();
+		sessionCountdownRef.current = setInterval(() => {
+			const elapsed = Date.now() - startTime;
+			const remaining = Math.max(0, SESSION_DURATION_MS - elapsed);
+			setSessionTimeLeft(remaining);
+			if (remaining <= 0) {
+				clearInterval(sessionCountdownRef.current);
+			}
+		}, 1000);
+
+		// Hard limit: end the session after SESSION_DURATION_MS
+		sessionTimerRef.current = setTimeout(() => {
+			handleSessionTimeout();
+		}, SESSION_DURATION_MS);
+	};
+
+	const clearSessionTimer = () => {
+		clearTimeout(sessionTimerRef.current);
+		sessionTimerRef.current = null;
+		clearInterval(sessionCountdownRef.current);
+		sessionCountdownRef.current = null;
+		setSessionTimeLeft(null);
+		setIsSessionEnding(false);
+	};
+
+	const handleSessionTimeout = () => {
+		if (!isStreamingRef.current || isProcessingRef.current) return;
+		setIsSessionEnding(true);
+
+		// Add a system notice to the chat log
+		const systemMsg = {
+			id: `session_timeout_${Date.now()}`,
+			role: "system",
+			text: "⏰ The 5-minute session has ended. The conversation so far will now be processed for triage.",
+			isFinal: true,
+		};
+		setChatLog((prev) => {
+			const next = [...prev, systemMsg];
+			latestChatLogRef.current = next;
+			return next;
+		});
+
+		// Brief delay so the user can read the message before cleanup
+		setTimeout(() => {
+			processAndQueueReport();
+		}, 2000);
+	};
+
 	const startAgoraStreaming = async () => {
 		if (!AGORA_APP_ID) {
 			console.warn("Agora APP ID missing — cannot continue without Agora.");
@@ -230,6 +304,8 @@ function PatientTriage({ onNewCase }) {
 			isStreamingRef.current = true;
 			setIsListening(true);
 			await startConversationalAgent(localUid);
+			// Start the 5-minute session timer after successful connection
+			startSessionTimer();
 		} catch (error) {
 			client.removeAllListeners();
 			try {
@@ -240,6 +316,7 @@ function PatientTriage({ onNewCase }) {
 	};
 
 	const cleanupAgora = async () => {
+		clearSessionTimer();
 		try {
 			await stopConversationalAgent();
 			if (localTrackRef.current) {
@@ -407,7 +484,7 @@ function PatientTriage({ onNewCase }) {
 					textLower1.includes("goodbye") ||
 					textLower1.includes("change your mind") ||
 					textLower1.includes("feel free to");
-				const isOverLimit1 = latestChatLogRef.current.length >= 20;
+				const isOverLimit1 = latestChatLogRef.current.length >= 80;
 
 				if (isFinal) {
 					if ((role === "ai" && hasSuccessPhrase1) || isOverLimit1) {
@@ -475,7 +552,7 @@ function PatientTriage({ onNewCase }) {
 				textLower2.includes("goodbye") ||
 				textLower2.includes("change your mind") ||
 				textLower2.includes("feel free to");
-			const isOverLimit2 = latestChatLogRef.current.length >= 20;
+			const isOverLimit2 = latestChatLogRef.current.length >= 80;
 
 			if (isFinal) {
 				if ((role === "ai" && hasSuccessPhrase2) || isOverLimit2) {
@@ -509,7 +586,7 @@ function PatientTriage({ onNewCase }) {
 			textLower3.includes("goodbye") ||
 			textLower3.includes("change your mind") ||
 			textLower3.includes("feel free to");
-		const isOverLimit3 = latestChatLogRef.current.length >= 20;
+		const isOverLimit3 = latestChatLogRef.current.length >= 80;
 
 		if (isFinal) {
 			if ((role === "ai" && hasSuccessPhrase3) || isOverLimit3) {
@@ -527,6 +604,7 @@ function PatientTriage({ onNewCase }) {
 		// Cut the audio connection instantly
 		cleanupAgora();
 		setIsTriageComplete(true);
+		setIsGeneratingReport(true);
 		try {
 			// Build the chat log from current state
 			const currentChatLog = latestChatLogRef.current
@@ -573,8 +651,10 @@ function PatientTriage({ onNewCase }) {
 				caseId: report.caseId,
 				status: report.status,
 			});
+			setIsGeneratingReport(false);
 		} catch (error) {
 			console.error("[Triage] processAndQueueReport error:", error);
+			setIsGeneratingReport(false);
 			setError(error?.message || "Failed to generate triage report.");
 		}
 	};
@@ -584,11 +664,15 @@ function PatientTriage({ onNewCase }) {
 		cleanupAgora();
 		setIsTriageComplete(true);
 		setIsAborted(true);
+		setIsGeneratingReport(false);
 	};
 
 	const toggleTriage = async () => {
 		setIsAborted(false);
 		setIsTriageComplete(false);
+		setIsGeneratingReport(false);
+		setIsSessionEnding(false);
+		setSessionTimeLeft(null);
 		setError("");
 		isProcessingRef.current = false;
 		if (isListening) {
@@ -667,6 +751,35 @@ function PatientTriage({ onNewCase }) {
 										? `Conversational AI agent is disabled.${caeErrorText ? ` ${caeErrorText}` : ""}`
 										: ""}
 					</p>
+					{sessionTimeLeft !== null && isListening && !isSessionEnding && (
+						<div className="mt-3 flex items-center justify-center gap-1.5">
+							<div
+								className={`h-2 w-2 rounded-full ${
+									sessionTimeLeft <= SESSION_WARNING_MS
+										? "animate-pulse bg-red-500"
+										: "bg-emerald-500"
+								}`}
+							/>
+							<span
+								className={`text-xs font-semibold ${
+									sessionTimeLeft <= SESSION_WARNING_MS
+										? "text-red-600"
+										: "text-slate-500"
+								}`}
+							>
+								{sessionTimeLeft <= SESSION_WARNING_MS
+									? "Session ending soon"
+									: `Session: ${Math.floor(sessionTimeLeft / 60000)}:${String(
+											Math.floor((sessionTimeLeft % 60000) / 1000),
+										).padStart(2, "0")}`}
+							</span>
+						</div>
+					)}
+					{isSessionEnding && (
+						<p className="mt-3 animate-pulse text-center text-xs font-semibold text-amber-600">
+							⏰ Session time limit reached. Processing your triage...
+						</p>
+					)}
 				</div>
 
 				<div className="flex flex-col rounded-3xl border border-slate-200 bg-white/90 p-5 shadow-sm">
@@ -708,13 +821,15 @@ function PatientTriage({ onNewCase }) {
 							chatLog.map((msg) => (
 								<div
 									key={msg.id}
-									className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+									className={`flex ${msg.role === "user" ? "justify-end" : msg.role === "system" ? "justify-center" : "justify-start"}`}
 								>
 									<div
-										className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm leading-relaxed ${
+										className={`max-w-[90%] rounded-2xl px-4 py-2 text-sm leading-relaxed ${
 											msg.role === "user"
 												? "rounded-br-sm bg-blue-500 text-white"
-												: "rounded-bl-sm bg-white text-slate-800 shadow-sm"
+												: msg.role === "system"
+													? "rounded-xl border border-amber-200 bg-amber-50 text-center text-amber-700 shadow-sm"
+													: "rounded-bl-sm bg-white text-slate-800 shadow-sm"
 										} ${msg.isFinal ? "" : "opacity-60"}`}
 									>
 										{msg.text}
@@ -725,6 +840,7 @@ function PatientTriage({ onNewCase }) {
 								</div>
 							))
 						)}
+						<div ref={messagesEndRef} />
 					</div>
 				</div>
 			</div>
@@ -735,94 +851,110 @@ function PatientTriage({ onNewCase }) {
 				</div>
 			)}
 
-			{analysis && (
-				<div
-					className={`space-y-4 rounded-3xl border p-5 shadow-sm ${
-						urgencyPanelStyle[analysis.urgency] || urgencyPanelStyle.LOW
-					}`}
-				>
-					{analysis.safety_override && (
-						<div className="rounded-xl border border-red-300 bg-red-100 px-4 py-3 text-sm font-semibold text-red-800">
-							{analysis.safety_message ||
-								"Emergency safety rule triggered. Immediate care is recommended."}
+			<div ref={reportRef} className="mt-4">
+				{isGeneratingReport && (
+					<div className="space-y-4 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+						<div className="h-8 w-1/3 animate-pulse rounded-lg bg-slate-200"></div>
+						<div className="space-y-2 pt-4">
+							<div className="h-4 w-full animate-pulse rounded bg-slate-100"></div>
+							<div className="h-4 w-5/6 animate-pulse rounded bg-slate-100"></div>
+							<div className="h-4 w-4/6 animate-pulse rounded bg-slate-100"></div>
 						</div>
-					)}
-
-					<div className="flex items-center justify-between gap-3">
-						<h3 className="font-headline text-xl font-bold">Triage Result</h3>
-						<UrgencyBadge urgency={analysis.urgency} />
-					</div>
-
-					{typeof analysis.confidence === "number" && (
-						<div>
-							<div className="mb-1 flex items-center justify-between">
-								<p className="text-xs font-bold uppercase tracking-wide text-slate-500">
-									AI Confidence
-								</p>
-								<span
-									className={`text-sm font-bold ${confidenceTextColor(analysis.confidence)}`}
-								>
-									{analysis.confidence}%
-								</span>
-							</div>
-							<div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
-								<div
-									className={`h-2 rounded-full transition-all duration-500 ${confidenceBarColor(analysis.confidence)}`}
-									style={{ width: `${analysis.confidence}%` }}
-								/>
-							</div>
+						<div className="pt-4">
+							<div className="h-10 w-32 animate-pulse rounded-xl bg-slate-200"></div>
 						</div>
-					)}
-
-					<div>
-						<p className="text-xs font-bold uppercase tracking-wide text-slate-500">
-							Doctor Summary
-						</p>
-						<p className="mt-1 text-slate-900">{analysis.summary}</p>
 					</div>
+				)}
 
-					<div>
-						<p className="text-xs font-bold uppercase tracking-wide text-slate-500">
-							Possible Issue
-						</p>
-						<p className="mt-1 text-slate-800">{analysis.possible_issue}</p>
-					</div>
-
-					<div>
-						<p className="text-xs font-bold uppercase tracking-wide text-slate-500">
-							Scheduling Recommendation
-						</p>
-						<p className="mt-1 text-slate-800">{analysis.recommendation}</p>
-					</div>
-
-					{Array.isArray(analysis.urgency_reasons) &&
-						analysis.urgency_reasons.length > 0 && (
-							<div>
-								<p className="text-xs font-bold uppercase tracking-wide text-slate-500">
-									Why This Urgency
-								</p>
-								<ul className="mt-1 list-disc space-y-1 pl-5 text-slate-800">
-									{analysis.urgency_reasons.map((reason, i) => (
-										<li key={`${reason}-${i}`}>{reason}</li>
-									))}
-								</ul>
+				{analysis && (
+					<div
+						className={`space-y-4 rounded-3xl border p-5 shadow-sm ${
+							urgencyPanelStyle[analysis.urgency] || urgencyPanelStyle.LOW
+						}`}
+					>
+						{analysis.safety_override && (
+							<div className="rounded-xl border border-red-300 bg-red-100 px-4 py-3 text-sm font-semibold text-red-800">
+								{analysis.safety_message ||
+									"Emergency safety rule triggered. Immediate care is recommended."}
 							</div>
 						)}
 
-					<p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-						⚠️ This tool determines appointment scheduling priority only. It
-						does not provide medical diagnoses or treatment advice. A licensed
-						physician must evaluate the patient.
-					</p>
+						<div className="flex items-center justify-between gap-3">
+							<h3 className="font-headline text-xl font-bold">Triage Result</h3>
+							<UrgencyBadge urgency={analysis.urgency} />
+						</div>
 
-					<button
-						onClick={deleteTriageResult}
-						className="rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700"
-					>
-						Delete Result
-					</button>
-				</div>
-			)}
+						{typeof analysis.confidence === "number" && (
+							<div>
+								<div className="mb-1 flex items-center justify-between">
+									<p className="text-xs font-bold uppercase tracking-wide text-slate-500">
+										AI Confidence
+									</p>
+									<span
+										className={`text-sm font-bold ${confidenceTextColor(analysis.confidence)}`}
+									>
+										{analysis.confidence}%
+									</span>
+								</div>
+								<div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
+									<div
+										className={`h-2 rounded-full transition-all duration-500 ${confidenceBarColor(analysis.confidence)}`}
+										style={{ width: `${analysis.confidence}%` }}
+									/>
+								</div>
+							</div>
+						)}
+
+						<div>
+							<p className="text-xs font-bold uppercase tracking-wide text-slate-500">
+								Doctor Summary
+							</p>
+							<p className="mt-1 text-slate-900">{analysis.summary}</p>
+						</div>
+
+						<div>
+							<p className="text-xs font-bold uppercase tracking-wide text-slate-500">
+								Possible Issue
+							</p>
+							<p className="mt-1 text-slate-800">{analysis.possible_issue}</p>
+						</div>
+
+						<div>
+							<p className="text-xs font-bold uppercase tracking-wide text-slate-500">
+								Scheduling Recommendation
+							</p>
+							<p className="mt-1 text-slate-800">{analysis.recommendation}</p>
+						</div>
+
+						{Array.isArray(analysis.urgency_reasons) &&
+							analysis.urgency_reasons.length > 0 && (
+								<div>
+									<p className="text-xs font-bold uppercase tracking-wide text-slate-500">
+										Why This Urgency
+									</p>
+									<ul className="mt-1 list-disc space-y-1 pl-5 text-slate-800">
+										{analysis.urgency_reasons.map((reason, i) => (
+											<li key={`${reason}-${i}`}>{reason}</li>
+										))}
+									</ul>
+								</div>
+							)}
+
+						<p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+							⚠️ This tool determines appointment scheduling priority only. It
+							does not provide medical diagnoses or treatment advice. A licensed
+							physician must evaluate the patient.
+						</p>
+
+						<button
+							onClick={deleteTriageResult}
+							className="rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700"
+						>
+							Delete Result
+						</button>
+					</div>
+				)}
+			</div>
 		</section>
 	);
 }

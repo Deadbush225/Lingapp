@@ -44,14 +44,14 @@ const caeLlmModel =
 	process.env.AGORA_CAE_LLM_MODEL || process.env.LLM_MODEL || "gpt-4o-mini";
 const caeSystemMessage =
 	process.env.AGORA_CAE_SYSTEM_MESSAGE ||
-	"CRITICAL OVERRIDE: If the user refuses to answer, says 'no', makes non-medical statements, or stalls, YOU MUST IMMEDIATELY SAY EXACTLY: 'Thank you, I will now terminate the conversation.' Do not be polite. Do not offer future help. \n\nCORE RULES:\n1. ONLY discuss medical symptoms.\n2. Ask EXACTLY ONE question at a time. Max 4 questions.\n3. Path A (Success): If valid medical data is gathered, say EXACTLY: 'That's excellent, I will now process this.'";
+	"CRITICAL OVERRIDE: If the user refuses to answer, says 'no', makes non-medical statements, or stalls, YOU MUST IMMEDIATELY SAY EXACTLY: 'Thank you, I will now terminate the conversation.' Do not be polite. Do not offer future help. \n\nCORE RULES:\n1. ONLY discuss medical symptoms.\n2. Ask EXACTLY ONE question at a time. Max 4 questions.\n3. Path A (Success): If valid medical data is gathered, say EXACTLY: 'That's excellent, I will now process this.'\n5. Understand and respond naturally in English, Tagalog, or Taglish matching the user's language.";
 const caeGreetingMessage =
 	process.env.AGORA_CAE_GREETING_MESSAGE ||
 	"Hello! I am the clinic's triage assistant. What is your name?";
 const caeFailureMessage =
 	process.env.AGORA_CAE_FAILURE_MESSAGE ||
 	"Sorry, I am having trouble understanding. Please try again.";
-const caeAsrLanguage = process.env.AGORA_CAE_ASR_LANGUAGE || "en-US";
+const caeAsrLanguage = process.env.AGORA_CAE_ASR_LANGUAGE || "fil-PH";
 const caeIdleTimeout = Number(process.env.AGORA_CAE_IDLE_TIMEOUT || 120);
 const caeAgentRtcUid = process.env.AGORA_CAE_AGENT_RTC_UID || "0";
 const caeTtsVendor = process.env.AGORA_CAE_TTS_VENDOR || "microsoft";
