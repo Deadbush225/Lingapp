@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import mongoose from "mongoose";
+import { RtcTokenBuilder, RtcRole } from "agora-access-token";
 import { analyzeSymptomsController } from "./triageController.js";
 import TriageCase from "./models/TriageCase.js";
 
@@ -622,6 +623,64 @@ app.delete("/api/triage/case/:caseId", async (req, res) => {
 		console.error("[Backend] Delete case error:", error);
 		res.status(500).json({ error: "Failed to delete case" });
 	}
+});
+
+// ── Agora Dynamic Token Endpoint (with Turnstile CAPTCHA) ──────────
+app.get("/api/agora/token", async (req, res) => {
+	const channelName = req.query.channel || "triage-room";
+	const uid = req.query.uid || 0;
+	const cfToken = req.query.cfToken;
+
+	// Verify Turnstile CAPTCHA if secret key is configured
+	if (process.env.CLOUDFLARE_SECRET_KEY) {
+		if (!cfToken) {
+			return res.status(400).json({ error: "CAPTCHA verification required." });
+		}
+		try {
+			const verifyRes = await fetch(
+				"https://challenges.cloudflare.com/turnstile/v0/siteverify",
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						secret: process.env.CLOUDFLARE_SECRET_KEY,
+						response: cfToken,
+					}),
+				},
+			);
+			const verifyData = await verifyRes.json();
+			if (!verifyData.success) {
+				return res.status(403).json({ error: "CAPTCHA validation failed." });
+			}
+		} catch (err) {
+			console.error("[Backend] CAPTCHA verify error:", err);
+			return res.status(500).json({ error: "Failed to verify CAPTCHA" });
+		}
+	}
+
+	const appId = process.env.AGORA_APP_ID;
+	const appCertificate = process.env.AGORA_APP_CERTIFICATE;
+	if (!appId || !appCertificate) {
+		return res
+			.status(500)
+			.json({ error: "Agora credentials missing on server" });
+	}
+
+	const role = RtcRole.PUBLISHER;
+	const expirationTimeInSeconds = 3600;
+	const currentTimestamp = Math.floor(Date.now() / 1000);
+	const privilegeExpiredTs = currentTimestamp + expirationTimeInSeconds;
+
+	const token = RtcTokenBuilder.buildTokenWithUid(
+		appId,
+		appCertificate,
+		channelName,
+		uid,
+		role,
+		privilegeExpiredTs,
+	);
+
+	return res.json({ token });
 });
 
 const isVercel = Boolean(process.env.VERCEL);

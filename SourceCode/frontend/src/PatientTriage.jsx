@@ -3,14 +3,14 @@ import AgoraRTC from "agora-rtc-sdk-ng";
 import UrgencyBadge from "./components/UrgencyBadge";
 
 const API_BASE_URL =
-	import.meta.env.API_BASE_URL || "http://localhost:4000";
-const AGORA_APP_ID = import.meta.env.AGORA_APP_ID;
-const AGORA_CHANNEL = import.meta.env.AGORA_CHANNEL || "triage-room";
-const AGORA_TOKEN = import.meta.env.AGORA_TOKEN || null;
+	import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
+const AGORA_APP_ID = import.meta.env.VITE_AGORA_APP_ID;
+const AGORA_CHANNEL = import.meta.env.VITE_AGORA_CHANNEL || "triage-room";
 const ENABLE_CONVERSATIONAL_AI =
 	String(
-		import.meta.env.ENABLE_CONVERSATIONAL_AI || "false",
+		import.meta.env.VITE_ENABLE_CONVERSATIONAL_AI || "false",
 	).toLowerCase() === "true";
+const TURNSTILE_SITE_KEY = import.meta.env.VITE_CLOUDFLARE_SITE_KEY || "";
 const CAE_START_TIMEOUT_MS = 12000;
 const SESSION_DURATION_MS = 300000; // 5 minutes hard limit
 const SESSION_WARNING_MS = 30000; // warn user 30 seconds before timeout
@@ -28,6 +28,7 @@ function PatientTriage({ onNewCase }) {
 	const [sessionTimeLeft, setSessionTimeLeft] = useState(null);
 	const [isSessionEnding, setIsSessionEnding] = useState(false);
 	const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+	const [currentTurnstileToken, setCurrentTurnstileToken] = useState("");
 
 	const agoraClientRef = useRef(null);
 	const reportRef = useRef(null);
@@ -43,6 +44,50 @@ function PatientTriage({ onNewCase }) {
 	const isProcessingRef = useRef(false);
 	const activeUserMsgIdRef = useRef(null);
 	const activeAiMsgIdRef = useRef(null);
+	useEffect(() => {
+		// Load Cloudflare Turnstile script and render widget
+		if (!TURNSTILE_SITE_KEY) return;
+		const scriptId = "cf-turnstile-script";
+		if (!document.getElementById(scriptId)) {
+			const script = document.createElement("script");
+			script.src =
+				"https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onTurnstileLoad";
+			script.id = scriptId;
+			script.async = true;
+			script.defer = true;
+			document.body.appendChild(script);
+		}
+		window.onTurnstileLoad = () => {
+			const container = document.getElementById("turnstile-widget");
+			if (container && !container.hasChildNodes()) {
+				turnstile.render(container, {
+					sitekey: TURNSTILE_SITE_KEY,
+					callback: (token) => {
+						setCurrentTurnstileToken(token);
+					},
+					"expired-callback": () => {
+						setCurrentTurnstileToken("");
+					},
+				});
+			}
+		};
+		// If turnstile already loaded, render immediately
+		if (window.turnstile) {
+			const container = document.getElementById("turnstile-widget");
+			if (container && !container.hasChildNodes()) {
+				turnstile.render(container, {
+					sitekey: TURNSTILE_SITE_KEY,
+					callback: (token) => {
+						setCurrentTurnstileToken(token);
+					},
+					"expired-callback": () => {
+						setCurrentTurnstileToken("");
+					},
+				});
+			}
+		}
+	}, []);
+
 	useEffect(() => {
 		try {
 			const raw = localStorage.getItem(TRIAGE_RESULT_STORAGE_KEY);
@@ -103,13 +148,13 @@ function PatientTriage({ onNewCase }) {
 		setIsTriageComplete(false);
 	};
 
-	const startConversationalAgent = async (remoteRtcUid) => {
+	const startConversationalAgent = async (remoteRtcUid, agoraToken) => {
 		if (!ENABLE_CONVERSATIONAL_AI) {
 			setCaeStatus("disabled");
 			setCaeErrorText("");
 			return;
 		}
-		if (!AGORA_TOKEN) {
+		if (!agoraToken) {
 			setCaeStatus("error");
 			setCaeErrorText("Missing Agora token for Conversational AI.");
 			return;
@@ -142,7 +187,7 @@ function PatientTriage({ onNewCase }) {
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({
 						channel: AGORA_CHANNEL,
-						token: AGORA_TOKEN,
+						token: agoraToken,
 						remoteRtcUid: String(remoteRtcUid),
 					}),
 					signal: controller.signal,
@@ -267,7 +312,7 @@ function PatientTriage({ onNewCase }) {
 			console.warn("Agora APP ID missing — cannot continue without Agora.");
 			setCaeStatus("disabled");
 			setError(
-				"Agora APP ID is not configured. Set AGORA_APP_ID in .env.",
+				"Agora APP ID is not configured. Set VITE_AGORA_APP_ID in .env.",
 			);
 			return;
 		}
@@ -292,10 +337,23 @@ function PatientTriage({ onNewCase }) {
 
 			const micTrack = await AgoraRTC.createMicrophoneAudioTrack();
 			const safeUid = Math.floor(Math.random() * 2147483647) + 1;
+
+			// Fetch a dynamic token from the backend with Turnstile CAPTCHA
+			const cfTokenParam = currentTurnstileToken
+				? `&cfToken=${encodeURIComponent(currentTurnstileToken)}`
+				: "";
+			const tokenRes = await fetch(
+				`${API_BASE_URL}/api/agora/token?channel=${encodeURIComponent(AGORA_CHANNEL)}&uid=${safeUid}${cfTokenParam}`,
+			);
+			const tokenData = await tokenRes.json();
+			if (!tokenRes.ok)
+				throw new Error(tokenData.error || "Failed to fetch secure token");
+
+			const dynamicToken = tokenData.token;
 			const localUid = await client.join(
 				AGORA_APP_ID,
 				AGORA_CHANNEL,
-				AGORA_TOKEN,
+				dynamicToken,
 				safeUid,
 			);
 			await client.publish([micTrack]);
@@ -303,7 +361,7 @@ function PatientTriage({ onNewCase }) {
 			localTrackRef.current = micTrack;
 			isStreamingRef.current = true;
 			setIsListening(true);
-			await startConversationalAgent(localUid);
+			await startConversationalAgent(localUid, dynamicToken);
 			// Start the 5-minute session timer after successful connection
 			startSessionTimer();
 		} catch (error) {
@@ -751,6 +809,14 @@ function PatientTriage({ onNewCase }) {
 										? `Conversational AI agent is disabled.${caeErrorText ? ` ${caeErrorText}` : ""}`
 										: ""}
 					</p>
+
+					{/* Cloudflare Turnstile CAPTCHA widget */}
+					{TURNSTILE_SITE_KEY && !isListening && (
+						<div className="mt-4 flex justify-center">
+							<div id="turnstile-widget"></div>
+						</div>
+					)}
+
 					{sessionTimeLeft !== null && isListening && !isSessionEnding && (
 						<div className="mt-3 flex items-center justify-center gap-1.5">
 							<div
