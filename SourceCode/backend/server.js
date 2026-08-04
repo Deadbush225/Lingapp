@@ -110,7 +110,16 @@ function getAgoraAuthHeader() {
 function parseTtsParams() {
 	try {
 		const parsed = JSON.parse(caeTtsParamsJson);
-		return typeof parsed === "object" && parsed !== null ? parsed : {};
+		const params = typeof parsed === "object" && parsed !== null ? parsed : {};
+		// Auto-populate Azure (microsoft) TTS params from top-level env vars when missing
+		if (String(caeTtsVendor || "").toLowerCase() === "microsoft") {
+			if (!params.key && azureSpeechApiKey) params.key = azureSpeechApiKey;
+			if (!params.region && azureSpeechRegion)
+				params.region = azureSpeechRegion;
+			if (!params.voice_name && azureSpeechVoiceName)
+				params.voice_name = azureSpeechVoiceName;
+		}
+		return params;
 	} catch {
 		return {};
 	}
@@ -338,12 +347,10 @@ app.post("/speech/synthesize", async (req, res) => {
 
 		const endpoint = getAzureTtsEndpoint();
 		if (!endpoint) {
-			return res
-				.status(500)
-				.json({
-					error:
-						"Set AZURE_SPEECH_REGION or AZURE_SPEECH_ENDPOINT for Azure Speech TTS",
-				});
+			return res.status(500).json({
+				error:
+					"Set AZURE_SPEECH_REGION or AZURE_SPEECH_ENDPOINT for Azure Speech TTS",
+			});
 		}
 
 		const response = await fetch(endpoint, {

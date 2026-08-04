@@ -580,9 +580,9 @@ async function callTogether(apiKey, model, symptoms, systemPrompt) {
 }
 
 async function runLlmAnalysis(symptoms) {
-  const provider = (process.env.LLM_PROVIDER || "mock").toLowerCase();
-  const apiKey = process.env.LLM_API_KEY;
-  const model = process.env.LLM_MODEL || "llama-3.1-8b-instant";
+	const provider = (process.env.LLM_PROVIDER || "openrouter").toLowerCase();
+	const apiKey = process.env.LLM_API_KEY;
+	const model = process.env.LLM_MODEL || "openai/gpt-4o-mini";
   const systemPrompt = buildSystemPrompt(symptoms);
 
   if (provider === "mock") {
