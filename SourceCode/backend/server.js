@@ -44,7 +44,7 @@ const caeLlmModel =
 	process.env.AGORA_CAE_LLM_MODEL || process.env.LLM_MODEL || "gpt-4o-mini";
 const caeSystemMessage =
 	process.env.AGORA_CAE_SYSTEM_MESSAGE ||
-	"You are a strict medical triage assistant. RULES: 1. ONLY discuss medical triage. Refuse all other topics. 2. Ask 1 question at a time. 3. Max 4 questions total. 4. If the user refuses to answer, stalls, or goes off-topic, terminate immediately. 5. TO END THE CHAT FOR ANY REASON (success, emergency, or refusal), you MUST say EXACTLY: 'That's excellent, I will now process this.' Do not say goodbye without this phrase.";
+	"CRITICAL OVERRIDE: If the user refuses to answer, says 'no', makes non-medical statements, or stalls, YOU MUST IMMEDIATELY SAY EXACTLY: 'Thank you, I will now terminate the conversation.' Do not be polite. Do not offer future help. \n\nCORE RULES:\n1. ONLY discuss medical symptoms.\n2. Ask EXACTLY ONE question at a time. Max 4 questions.\n3. Path A (Success): If valid medical data is gathered, say EXACTLY: 'That's excellent, I will now process this.'";
 const caeGreetingMessage =
 	process.env.AGORA_CAE_GREETING_MESSAGE ||
 	"Hello! I am the clinic's triage assistant. What is your name?";

@@ -22,6 +22,7 @@ function PatientTriage({ onNewCase }) {
 	const [caeStatus, setCaeStatus] = useState("idle");
 	const [caeErrorText, setCaeErrorText] = useState("");
 	const [isTriageComplete, setIsTriageComplete] = useState(false);
+	const [isAborted, setIsAborted] = useState(false);
 
 	const agoraClientRef = useRef(null);
 	const localTrackRef = useRef(null);
@@ -395,15 +396,25 @@ function PatientTriage({ onNewCase }) {
 
 				upsertMessage(stableId, role, text, isFinal);
 
-				// Auto-trigger report generation when AI signals conversation is complete
+				// Check for specific AI end phrases
 				const textLower1 = text.toLowerCase();
-				const hasEndPhrase1 =
-					textLower1.includes("i will now process this") ||
+				const hasSuccessPhrase1 = textLower1.includes(
+					"i will now process this",
+				);
+				const hasAbortPhrase1 =
+					textLower1.includes("i will now terminate the conversation") ||
+					textLower1.includes("take care") ||
 					textLower1.includes("goodbye") ||
-					textLower1.includes("take care");
+					textLower1.includes("change your mind") ||
+					textLower1.includes("feel free to");
 				const isOverLimit1 = latestChatLogRef.current.length >= 20;
-				if (isFinal && ((role === "ai" && hasEndPhrase1) || isOverLimit1)) {
-					processAndQueueReport();
+
+				if (isFinal) {
+					if ((role === "ai" && hasSuccessPhrase1) || isOverLimit1) {
+						processAndQueueReport();
+					} else if (role === "ai" && hasAbortPhrase1) {
+						abortPointlessTriage();
+					}
 				}
 
 				if (isFinal && turnId === undefined) {
@@ -455,15 +466,23 @@ function PatientTriage({ onNewCase }) {
 
 			upsertMessage(stableId, role, text, isFinal);
 
-			// Auto-trigger report generation when AI signals conversation is complete
+			// Check for specific AI end phrases
 			const textLower2 = text.toLowerCase();
-			const hasEndPhrase2 =
-				textLower2.includes("i will now process this") ||
+			const hasSuccessPhrase2 = textLower2.includes("i will now process this");
+			const hasAbortPhrase2 =
+				textLower2.includes("i will now terminate the conversation") ||
+				textLower2.includes("take care") ||
 				textLower2.includes("goodbye") ||
-				textLower2.includes("take care");
+				textLower2.includes("change your mind") ||
+				textLower2.includes("feel free to");
 			const isOverLimit2 = latestChatLogRef.current.length >= 20;
-			if (isFinal && ((role === "ai" && hasEndPhrase2) || isOverLimit2)) {
-				processAndQueueReport();
+
+			if (isFinal) {
+				if ((role === "ai" && hasSuccessPhrase2) || isOverLimit2) {
+					processAndQueueReport();
+				} else if (role === "ai" && hasAbortPhrase2) {
+					abortPointlessTriage();
+				}
 			}
 
 			if (isFinal && turnId === undefined) {
@@ -481,15 +500,23 @@ function PatientTriage({ onNewCase }) {
 			.slice(2, 8)}`;
 		upsertMessage(fallbackId, role, text, isFinal);
 
-		// Auto-trigger report generation when AI signals conversation is complete
+		// Check for specific AI end phrases
 		const textLower3 = text.toLowerCase();
-		const hasEndPhrase3 =
-			textLower3.includes("i will now process this") ||
+		const hasSuccessPhrase3 = textLower3.includes("i will now process this");
+		const hasAbortPhrase3 =
+			textLower3.includes("i will now terminate the conversation") ||
+			textLower3.includes("take care") ||
 			textLower3.includes("goodbye") ||
-			textLower3.includes("take care");
+			textLower3.includes("change your mind") ||
+			textLower3.includes("feel free to");
 		const isOverLimit3 = latestChatLogRef.current.length >= 20;
-		if (isFinal && ((role === "ai" && hasEndPhrase3) || isOverLimit3)) {
-			processAndQueueReport();
+
+		if (isFinal) {
+			if ((role === "ai" && hasSuccessPhrase3) || isOverLimit3) {
+				processAndQueueReport();
+			} else if (role === "ai" && hasAbortPhrase3) {
+				abortPointlessTriage();
+			}
 		}
 	};
 
@@ -552,7 +579,15 @@ function PatientTriage({ onNewCase }) {
 		}
 	};
 
+	const abortPointlessTriage = async () => {
+		if (!isStreamingRef.current) return;
+		cleanupAgora();
+		setIsTriageComplete(true);
+		setIsAborted(true);
+	};
+
 	const toggleTriage = async () => {
+		setIsAborted(false);
 		setIsTriageComplete(false);
 		setError("");
 		isProcessingRef.current = false;
@@ -635,9 +670,15 @@ function PatientTriage({ onNewCase }) {
 				</div>
 
 				<div className="flex flex-col rounded-3xl border border-slate-200 bg-white/90 p-5 shadow-sm">
-					{isTriageComplete && (
+					{isTriageComplete && !isAborted && (
 						<div className="mb-4 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm font-semibold text-green-700">
 							Chat ended. Report has been submitted to the doctor queue.
+						</div>
+					)}
+					{isAborted && (
+						<div className="mb-4 rounded-xl border border-orange-200 bg-orange-50 px-4 py-3 text-sm font-semibold text-orange-700">
+							Triage aborted: The session was closed due to invalid or
+							uncooperative responses.
 						</div>
 					)}
 					<div className="mb-3 flex items-center justify-between">
