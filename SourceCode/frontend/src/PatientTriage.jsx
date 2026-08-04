@@ -30,6 +30,7 @@ function PatientTriage({ onNewCase }) {
 	const isStreamingRef = useRef(false);
 	const latestChatLogRef = useRef([]);
 	const streamChunksRef = useRef({});
+	const isProcessingRef = useRef(false);
 	const activeUserMsgIdRef = useRef(null);
 	const activeAiMsgIdRef = useRef(null);
 	useEffect(() => {
@@ -375,7 +376,7 @@ function PatientTriage({ onNewCase }) {
 
 				const role =
 					parsed.object === "assistant.transcription" ? "ai" : "user";
-				const isFinal = parsed.turn_status === 1;
+				const isFinal = parsed.turn_status === 1 || parsed.is_final === true;
 				const turnId = parsed.turn_id;
 				const stableId =
 					turnId !== undefined
@@ -419,7 +420,7 @@ function PatientTriage({ onNewCase }) {
 							? "ai"
 							: null;
 				if (parsed.object && !role) return { ignored: true };
-				const isFinal = parsed.turn_status === 1;
+				const isFinal = parsed.turn_status === 1 || parsed.is_final === true;
 				const turnId = parsed.turn_id;
 				return { text, role: role || "user", isFinal, turnId };
 			} catch {
@@ -477,6 +478,8 @@ function PatientTriage({ onNewCase }) {
 	};
 
 	const processAndQueueReport = async () => {
+		if (isProcessingRef.current) return;
+		isProcessingRef.current = true;
 		if (!isStreamingRef.current) return;
 		// Cut the audio connection instantly
 		cleanupAgora();
@@ -536,6 +539,7 @@ function PatientTriage({ onNewCase }) {
 	const toggleTriage = async () => {
 		setIsTriageComplete(false);
 		setError("");
+		isProcessingRef.current = false;
 		if (isListening) {
 			isStreamingRef.current = false;
 			await cleanupAgora();
