@@ -69,7 +69,17 @@ const azureSpeechVoiceName =
 const azureSpeechDefaultLocale =
 	process.env.AZURE_SPEECH_DEFAULT_LOCALE || "en-US";
 
-app.use(cors());
+app.use(
+	cors({
+		origin: [
+			"https://lingapp.byinso.dev",
+			"http://localhost:5173",
+			"http://localhost:3000",
+		],
+		methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+		credentials: true,
+	}),
+);
 app.use(express.json());
 
 function hasCaeCoreConfig() {
