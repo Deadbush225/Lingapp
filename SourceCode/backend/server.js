@@ -1,9 +1,23 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import mongoose from "mongoose";
 import { analyzeSymptomsController } from "./triageController.js";
+import TriageCase from "./models/TriageCase.js";
 
 dotenv.config();
+
+// ── Connect to MongoDB ─────────────────────────────────────────────
+const mongoUri = process.env.MONGODB_URI;
+if (mongoUri) {
+	mongoose
+		.connect(mongoUri)
+		.then(() => console.log(" Connected to MongoDB successfully"))
+		.catch((err) => console.error(" MongoDB connection error:", err));
+} else {
+	console.warn("⚠️ MONGODB_URI is not defined in .env file!");
+}
+// ──────────────────────────────────────────────────────────────────
 
 const app = express();
 const port = process.env.PORT || 4000;
@@ -32,7 +46,8 @@ const caeSystemMessage =
 	process.env.AGORA_CAE_SYSTEM_MESSAGE ||
 	"You are a concise medical triage assistant. Ask 1 question at a time. Never repeat questions answered in history. If fever >= 39C or severe red flags occur, prioritize urgent care and wrap up. Max 3-4 questions. When finished ask strictly: 'Is that all you feel today?'. Upon user confirmation, reply strictly: 'That's excellent, I will now process this.'";
 const caeGreetingMessage =
-	process.env.AGORA_CAE_GREETING_MESSAGE || "Hello, how can I help you today?";
+	process.env.AGORA_CAE_GREETING_MESSAGE ||
+	"Hello! I am the clinic's triage assistant. What is your name?";
 const caeFailureMessage =
 	process.env.AGORA_CAE_FAILURE_MESSAGE ||
 	"Sorry, I am having trouble understanding. Please try again.";
@@ -424,6 +439,166 @@ app.post("/speech/synthesize", async (req, res) => {
 });
 
 app.post("/analyzeSymptoms", analyzeSymptomsController);
+
+// ── Triage Pipeline: Process Chat Log & Queue for Doctor ──────────
+app.post("/api/triage/process-and-queue", async (req, res) => {
+	try {
+		const { chatLog } = req.body || {};
+		console.log(
+			"[DEBUG Backend] Endpoint hit. chatLog received count:",
+			req.body?.chatLog?.length,
+		);
+		if (!Array.isArray(chatLog) || chatLog.length === 0) {
+			return res.status(400).json({ error: "chatLog array is required" });
+		}
+
+		// Build a conversation transcript from the chat log
+		const transcript = chatLog
+			.map((msg) => `[${msg.role.toUpperCase()}]: ${msg.text}`)
+			.join("\n");
+
+		// Generate a short patient temp ID
+		const patientTempId = `ANON-${Date.now().toString(36).toUpperCase()}`;
+
+		// Call OpenRouter with a structured prompt requesting a JSON report
+		const openRouterUrl =
+			process.env.LLM_PROVIDER === "openrouter"
+				? "https://openrouter.ai/api/v1/chat/completions"
+				: process.env.LLM_API_URL ||
+					"https://openrouter.ai/api/v1/chat/completions";
+
+		const systemPrompt = `You are a medical triage report generator. Analyze the complete patient conversation below and return a strict JSON object (no markdown, no code fences) with these exact fields:
+{
+  "urgency": "HIGH" | "MEDIUM" | "LOW",
+  "confidence": <integer 0-100>,
+  "summary": "Concise doctor-facing summary of reported symptoms and history",
+  "possibleIssue": "Broad symptom category (e.g. 'Respiratory symptoms', 'Gastrointestinal complaint') — never a specific diagnosis",
+  "recommendation": "Scheduling recommendation (e.g. 'Book next available urgent slot today', 'Schedule within 24-48 hours', 'Routine appointment within the week')",
+  "urgencyReasons": ["array of strings explaining why this urgency level was assigned"]
+}
+Rules:
+- HIGH: life-threatening or severe symptoms needing same-day/emergency care.
+- MEDIUM: moderate symptoms needing priority booking within 24-48 hours.
+- LOW: mild symptoms suitable for routine scheduling.
+- summary must be objective and neutral — describe what was reported, not a diagnosis.
+- possibleIssue must be a symptom category, never a specific disease.
+- recommendation must be a scheduling action only, never treatment advice.
+- confidence: 90+ if very clear, 60-89 if partially clear, below 60 if vague.`;
+
+		const llmApiKey = process.env.LLM_API_KEY || "";
+		const llmModel = process.env.LLM_MODEL || "openai/gpt-4o-mini";
+
+		const llmResponse = await fetch(openRouterUrl, {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${llmApiKey}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				model: llmModel,
+				messages: [
+					{ role: "system", content: systemPrompt },
+					{ role: "user", content: `Patient conversation:\n${transcript}` },
+				],
+				temperature: 0.1,
+			}),
+		});
+
+		if (!llmResponse.ok) {
+			const errorText = await llmResponse.text();
+			console.error(
+				"[Triage] OpenRouter error:",
+				llmResponse.status,
+				errorText,
+			);
+			return res
+				.status(502)
+				.json({ error: "LLM report generation failed", details: errorText });
+		}
+
+		const llmData = await llmResponse.json();
+		const llmContent = llmData.choices?.[0]?.message?.content || "";
+
+		console.log("[DEBUG Backend] Raw OpenRouter report response:", llmContent);
+
+		// Extract JSON from the response (handle code fences if present)
+		let reportJson;
+		const jsonMatch = llmContent.match(/\{[\s\S]*\}/);
+		if (jsonMatch) {
+			try {
+				reportJson = JSON.parse(jsonMatch[0]);
+			} catch {
+				return res.status(502).json({
+					error: "Failed to parse LLM JSON response",
+					raw: llmContent,
+				});
+			}
+		} else {
+			return res
+				.status(502)
+				.json({ error: "No JSON found in LLM response", raw: llmContent });
+		}
+
+		console.log("[DEBUG Backend] Parsed Report Object:", reportJson);
+
+		// Generate a unique case ID
+		const caseId = `CASE-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+
+		// Build the chat history for the record
+		const chatHistory = chatLog.map((msg) => ({
+			role: msg.role || "user",
+			text: msg.text || "",
+		}));
+
+		// Create and save the TriageCase document
+		const triageCase = new TriageCase({
+			caseId,
+			patientTempId,
+			urgency: reportJson.urgency || "LOW",
+			confidence:
+				typeof reportJson.confidence === "number" ? reportJson.confidence : 60,
+			summary: reportJson.summary || "No summary provided.",
+			possibleIssue: reportJson.possibleIssue || "General symptoms",
+			recommendation:
+				reportJson.recommendation || "Schedule a routine appointment.",
+			urgencyReasons: Array.isArray(reportJson.urgencyReasons)
+				? reportJson.urgencyReasons
+				: [],
+			chatHistory,
+			status: "queued_for_doctor",
+		});
+
+		try {
+			await triageCase.save();
+			console.log("[DEBUG Backend] MongoDB save success:", triageCase);
+		} catch (saveError) {
+			console.error("[DEBUG Backend] MongoDB save failed:", saveError);
+			throw saveError;
+		}
+
+		console.log(
+			`[Triage] Saved case ${caseId} for patient ${patientTempId} (${reportJson.urgency})`,
+		);
+
+		return res.status(201).json({
+			caseId,
+			patientTempId,
+			urgency: triageCase.urgency,
+			confidence: triageCase.confidence,
+			summary: triageCase.summary,
+			possibleIssue: triageCase.possibleIssue,
+			recommendation: triageCase.recommendation,
+			urgencyReasons: triageCase.urgencyReasons,
+			status: triageCase.status,
+			createdAt: triageCase.createdAt,
+		});
+	} catch (error) {
+		console.error("[Triage] process-and-queue error:", error);
+		return res
+			.status(500)
+			.json({ error: "Failed to process and queue triage report" });
+	}
+});
 
 const isVercel = Boolean(process.env.VERCEL);
 

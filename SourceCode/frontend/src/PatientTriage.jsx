@@ -21,12 +21,14 @@ function PatientTriage({ onNewCase }) {
 	const [error, setError] = useState("");
 	const [caeStatus, setCaeStatus] = useState("idle");
 	const [caeErrorText, setCaeErrorText] = useState("");
+	const [isTriageComplete, setIsTriageComplete] = useState(false);
 
 	const agoraClientRef = useRef(null);
 	const localTrackRef = useRef(null);
 	const caeAgentIdRef = useRef(null);
 	const chatLogRef = useRef(null);
 	const isStreamingRef = useRef(false);
+	const latestChatLogRef = useRef([]);
 	const streamChunksRef = useRef({});
 	const activeUserMsgIdRef = useRef(null);
 	const activeAiMsgIdRef = useRef(null);
@@ -300,9 +302,12 @@ function PatientTriage({ onNewCase }) {
 				if (idx >= 0) {
 					const next = [...prev];
 					next[idx] = { ...next[idx], text, isFinal };
+					latestChatLogRef.current = next;
 					return next;
 				}
-				return [...prev, { id, role, text, isFinal }];
+				const next = [...prev, { id, role, text, isFinal }];
+				latestChatLogRef.current = next;
+				return next;
 			});
 		};
 
@@ -379,6 +384,15 @@ function PatientTriage({ onNewCase }) {
 
 				upsertMessage(stableId, role, text, isFinal);
 
+				// Auto-trigger report generation when AI signals conversation is complete
+				if (
+					isFinal &&
+					role === "ai" &&
+					text.includes("That's excellent, I will now process this")
+				) {
+					processAndQueueReport();
+				}
+
 				if (isFinal && turnId === undefined) {
 					const ref = role === "user" ? activeUserMsgIdRef : activeAiMsgIdRef;
 					ref.current = null;
@@ -428,6 +442,15 @@ function PatientTriage({ onNewCase }) {
 
 			upsertMessage(stableId, role, text, isFinal);
 
+			// Auto-trigger report generation when AI signals conversation is complete
+			if (
+				isFinal &&
+				role === "ai" &&
+				text.includes("That's excellent, I will now process this")
+			) {
+				processAndQueueReport();
+			}
+
 			if (isFinal && turnId === undefined) {
 				const ref = role === "user" ? activeUserMsgIdRef : activeAiMsgIdRef;
 				ref.current = null;
@@ -442,9 +465,76 @@ function PatientTriage({ onNewCase }) {
 			.toString(36)
 			.slice(2, 8)}`;
 		upsertMessage(fallbackId, role, text, isFinal);
+
+		// Auto-trigger report generation when AI signals conversation is complete
+		if (
+			isFinal &&
+			role === "ai" &&
+			text.includes("That's excellent, I will now process this")
+		) {
+			processAndQueueReport();
+		}
+	};
+
+	const processAndQueueReport = async () => {
+		if (!isStreamingRef.current) return;
+		// Cut the audio connection instantly
+		cleanupAgora();
+		setIsTriageComplete(true);
+		try {
+			// Build the chat log from current state
+			const currentChatLog = latestChatLogRef.current
+				.filter((m) => m.isFinal && m.text)
+				.map((m) => ({ role: m.role, text: m.text }));
+
+			if (currentChatLog.length === 0) return;
+
+			console.log("[Triage] Processing and queuing report...");
+
+			console.log(
+				"[DEBUG Frontend] Sending chatLog to backend:",
+				currentChatLog,
+			);
+
+			const response = await fetch(
+				`${API_BASE_URL}/api/triage/process-and-queue`,
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ chatLog: currentChatLog }),
+				},
+			);
+
+			console.log("[DEBUG Frontend] Backend response status:", response.status);
+
+			const report = await response.json();
+			console.log("[DEBUG Frontend] Backend response data:", report);
+
+			if (!response.ok) {
+				throw new Error(report.error || `HTTP ${response.status}`);
+			}
+
+			console.log("[Triage] Report received:", report);
+
+			// Set the analysis state to render the triage result card
+			setAnalysis({
+				urgency: report.urgency,
+				confidence: report.confidence,
+				summary: report.summary,
+				possible_issue: report.possibleIssue,
+				recommendation: report.recommendation,
+				urgency_reasons: report.urgencyReasons,
+				caseId: report.caseId,
+				status: report.status,
+			});
+		} catch (error) {
+			console.error("[Triage] processAndQueueReport error:", error);
+			setError(error?.message || "Failed to generate triage report.");
+		}
 	};
 
 	const toggleTriage = async () => {
+		setIsTriageComplete(false);
 		setError("");
 		if (isListening) {
 			isStreamingRef.current = false;
@@ -499,7 +589,11 @@ function PatientTriage({ onNewCase }) {
 								: "bg-slate-900 hover:bg-slate-700"
 						}`}
 					>
-						{isListening ? "Stop Triage" : "Start Triage"}
+						{isTriageComplete
+							? "Start New Triage"
+							: isListening
+								? "Stop Triage"
+								: "Start Triage"}
 					</button>
 
 					<p className="mt-4 text-center text-sm text-slate-500">
@@ -521,6 +615,11 @@ function PatientTriage({ onNewCase }) {
 				</div>
 
 				<div className="flex flex-col rounded-3xl border border-slate-200 bg-white/90 p-5 shadow-sm">
+					{isTriageComplete && (
+						<div className="mb-4 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm font-semibold text-green-700">
+							Chat ended. Report has been submitted to the doctor queue.
+						</div>
+					)}
 					<div className="mb-3 flex items-center justify-between">
 						<h3 className="font-headline text-lg font-semibold text-slate-900">
 							Live Chat
