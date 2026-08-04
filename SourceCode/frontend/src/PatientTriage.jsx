@@ -396,11 +396,13 @@ function PatientTriage({ onNewCase }) {
 				upsertMessage(stableId, role, text, isFinal);
 
 				// Auto-trigger report generation when AI signals conversation is complete
-				if (
-					isFinal &&
-					role === "ai" &&
-					text.includes("That's excellent, I will now process this")
-				) {
+				const textLower1 = text.toLowerCase();
+				const hasEndPhrase1 =
+					textLower1.includes("i will now process this") ||
+					textLower1.includes("goodbye") ||
+					textLower1.includes("take care");
+				const isOverLimit1 = latestChatLogRef.current.length >= 20;
+				if (isFinal && ((role === "ai" && hasEndPhrase1) || isOverLimit1)) {
 					processAndQueueReport();
 				}
 
@@ -454,11 +456,13 @@ function PatientTriage({ onNewCase }) {
 			upsertMessage(stableId, role, text, isFinal);
 
 			// Auto-trigger report generation when AI signals conversation is complete
-			if (
-				isFinal &&
-				role === "ai" &&
-				text.includes("That's excellent, I will now process this")
-			) {
+			const textLower2 = text.toLowerCase();
+			const hasEndPhrase2 =
+				textLower2.includes("i will now process this") ||
+				textLower2.includes("goodbye") ||
+				textLower2.includes("take care");
+			const isOverLimit2 = latestChatLogRef.current.length >= 20;
+			if (isFinal && ((role === "ai" && hasEndPhrase2) || isOverLimit2)) {
 				processAndQueueReport();
 			}
 
@@ -478,11 +482,13 @@ function PatientTriage({ onNewCase }) {
 		upsertMessage(fallbackId, role, text, isFinal);
 
 		// Auto-trigger report generation when AI signals conversation is complete
-		if (
-			isFinal &&
-			role === "ai" &&
-			text.includes("That's excellent, I will now process this")
-		) {
+		const textLower3 = text.toLowerCase();
+		const hasEndPhrase3 =
+			textLower3.includes("i will now process this") ||
+			textLower3.includes("goodbye") ||
+			textLower3.includes("take care");
+		const isOverLimit3 = latestChatLogRef.current.length >= 20;
+		if (isFinal && ((role === "ai" && hasEndPhrase3) || isOverLimit3)) {
 			processAndQueueReport();
 		}
 	};
