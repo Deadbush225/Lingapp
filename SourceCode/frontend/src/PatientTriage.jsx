@@ -45,6 +45,7 @@ function PatientTriage({ onNewCase }) {
 	const isStreamingRef = useRef(false);
 	const followUpStateRef = useRef("idle");
 	const transcriptRef = useRef("");
+	const streamChunksRef = useRef({});
 
 	useEffect(() => {
 		try {
@@ -310,30 +311,157 @@ function PatientTriage({ onNewCase }) {
 	const handleStreamMessage = (uid, data) => {
 		if (!isStreamingRef.current) return;
 
+		/** Decode Base64 to UTF-8 string. */
+		const decodeBase64 = (str) => {
+			try {
+				return decodeURIComponent(
+					atob(str)
+						.split("")
+						.map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
+						.join(""),
+				);
+			} catch {
+				return atob(str);
+			}
+		};
+
+		/** Extract a readable string from the raw Agora data. */
+		const getRawString = (input) => {
+			if (typeof input === "string") return input;
+			if (input instanceof ArrayBuffer || input instanceof Uint8Array) {
+				try {
+					const decoded = new TextDecoder().decode(input);
+					// Skip binary gibberish (only allow printable ASCII + newlines)
+					if (/[^\x20-\x7E\n\r]/.test(decoded)) return null;
+					return decoded;
+				} catch {
+					return null;
+				}
+			}
+			return null;
+		};
+
+		/** Try to parse as a chunked stream message: msgId|chunkIndex|totalChunks|base64Payload */
+		const tryChunkedMessage = (raw) => {
+			const parts = raw.split("|");
+			if (parts.length < 4) return null;
+			const [msgId, chunkIndexStr, totalChunksStr, ...rest] = parts;
+			const chunkIndex = parseInt(chunkIndexStr, 10);
+			const totalChunks = parseInt(totalChunksStr, 10);
+			if (isNaN(chunkIndex) || isNaN(totalChunks) || chunkIndex < 1 || totalChunks < 1)
+				return null;
+			return { msgId, chunkIndex, totalChunks, base64Payload: rest.join("|") };
+		};
+
+		const raw = getRawString(data);
+		if (!raw) return;
+
+		// --- Attempt chunked stream message parsing first ---
+		const chunked = tryChunkedMessage(raw);
+		if (chunked) {
+			const { msgId, chunkIndex, totalChunks, base64Payload } = chunked;
+
+			// Initialise buffer for this msgId
+			if (!streamChunksRef.current[msgId]) {
+				streamChunksRef.current[msgId] = {};
+			}
+
+			// Store this chunk at its 1-based index
+			streamChunksRef.current[msgId][chunkIndex] = base64Payload;
+
+			// Check whether all chunks have arrived
+			const chunks = streamChunksRef.current[msgId];
+			if (Object.keys(chunks).length === totalChunks) {
+				// Concatenate in correct order (1 … totalChunks)
+				let concatenatedBase64 = "";
+				for (let i = 1; i <= totalChunks; i++) {
+					if (chunks[i]) {
+						concatenatedBase64 += chunks[i];
+					} else {
+						console.error(
+							`Missing chunk ${i}/${totalChunks} for msgId ${msgId}`,
+						);
+						delete streamChunksRef.current[msgId];
+						return;
+					}
+				}
+
+				// Free memory — we no longer need the buffer for this msgId
+				delete streamChunksRef.current[msgId];
+
+				// Decode from Base64 → UTF-8 → JSON
+				const decodedJson = decodeBase64(concatenatedBase64);
+				let parsed;
+				try {
+					parsed = JSON.parse(decodedJson);
+				} catch {
+					console.error(
+						"Failed to parse decoded stream message as JSON:",
+						decodedJson,
+					);
+					return;
+				}
+
+				const extractedText = parsed.text || parsed.transcript || "";
+				if (!extractedText) return;
+
+				// Ignore AI speech — only the patient's (user) transcription goes to the UI transcript.
+				if (parsed.object === "assistant.transcription") return;
+				if (parsed.object !== "user.transcription") return;
+
+				// Final only when turn_status === 1 (END); otherwise treat as interim (IN_PROGRESS).
+				const isFinal = parsed.turn_status === 1;
+
+				if (isFinal) {
+					transcriptRef.current =
+						`${transcriptRef.current}${extractedText} `.trim();
+					setTranscript(transcriptRef.current);
+
+					if (followUpStateRef.current === "listening") {
+						followUpTranscriptRef.current =
+							`${followUpTranscriptRef.current}${extractedText} `.trim();
+						setFollowUpTranscript(followUpTranscriptRef.current);
+					}
+				} else {
+					setInterimText(extractedText);
+					if (followUpStateRef.current === "listening") {
+						followUpInterimRef.current = extractedText;
+						setFollowUpInterim(extractedText);
+					}
+				}
+			}
+			return; // fully handled chunked message
+		}
+
+		// --- Fallback: plain JSON / raw string ---
 		let text = "";
 		let isFinal = true;
 
-		if (typeof data === "string") {
+		const tryParse = (raw) => {
 			try {
-				const parsed = JSON.parse(data);
-				text = parsed.text || parsed.transcript || parsed.data || "";
-				isFinal = parsed.isFinal !== false;
+				const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+				const msgType = String(parsed.type || "").toLowerCase();
+				if (msgType && msgType !== "transcription") return null;
+				// Ignore AI speech — only the patient's (user) transcription is shown.
+				if (parsed.object === "assistant.transcription") return { ignored: true };
+				if (parsed.object && parsed.object !== "user.transcription") return { ignored: true };
+				return {
+					text: parsed.text || parsed.transcript || parsed.data || "",
+					// Final only when turn_status === 1 (END); otherwise interim (IN_PROGRESS).
+					isFinal: parsed.turn_status === 1,
+				};
 			} catch {
-				text = data;
+				return null;
 			}
-		} else if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
-			try {
-				const decoded = new TextDecoder().decode(data);
-				try {
-					const parsed = JSON.parse(decoded);
-					text = parsed.text || parsed.transcript || parsed.data || "";
-					isFinal = parsed.isFinal !== false;
-				} catch {
-					text = decoded;
-				}
-			} catch {
-				return;
-			}
+		};
+
+		const result = tryParse(raw);
+		if (result?.ignored) return;
+		if (result) {
+			text = result.text;
+			isFinal = result.isFinal;
+		} else {
+			text = raw;
 		}
 
 		if (!text) return;

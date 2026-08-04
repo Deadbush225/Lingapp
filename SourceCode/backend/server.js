@@ -241,7 +241,18 @@ app.post("/conversationalAgent/start", async (req, res) => {
 					failure_message: caeFailureMessage,
 					params: { model: caeLlmModel },
 				},
-				asr: { language: caeAsrLanguage },
+				asr: {
+					language: caeAsrLanguage,
+					transcription: {
+						enable_transcription: true,
+						enable_intermediate_results: true,
+					},
+				},
+				stream_messages: {
+					enable_transcription: true,
+					enable_llm: true,
+					enable_agent_state: true,
+				},
 				tts: {
 					vendor: ttsPayload.vendor,
 					params: ttsPayload.params,
