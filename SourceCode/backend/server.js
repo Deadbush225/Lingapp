@@ -30,7 +30,7 @@ const caeLlmModel =
 	process.env.AGORA_CAE_LLM_MODEL || process.env.LLM_MODEL || "gpt-4o-mini";
 const caeSystemMessage =
 	process.env.AGORA_CAE_SYSTEM_MESSAGE ||
-	"You are a helpful medical intake voice assistant.";
+	"You are a concise medical triage assistant. Ask 1 question at a time. Never repeat questions answered in history. If fever >= 39C or severe red flags occur, prioritize urgent care and wrap up. Max 3-4 questions. When finished ask strictly: 'Is that all you feel today?'. Upon user confirmation, reply strictly: 'That's excellent, I will now process this.'";
 const caeGreetingMessage =
 	process.env.AGORA_CAE_GREETING_MESSAGE || "Hello, how can I help you today?";
 const caeFailureMessage =
@@ -224,14 +224,19 @@ app.post("/conversationalAgent/start", async (req, res) => {
 		const ttsPayload = buildTtsPayload(ttsParams);
 
 		const joinUrl = `https://api.agora.io/api/conversational-ai-agent/v2/projects/${agoraAppId}/join`;
+		// Determine if the remote UID is numeric or string-based
+		const remoteUidNum = Number(remoteRtcUid);
+		const isNumericUid =
+			!isNaN(remoteUidNum) &&
+			String(remoteUidNum) === String(remoteRtcUid).trim();
 		const payload = {
 			name: `triage-agent-${Date.now()}`,
 			properties: {
 				channel,
 				token: token || null,
-				agent_rtc_uid: String(caeAgentRtcUid),
+				agent_rtc_uid: "0",
 				remote_rtc_uids: [String(remoteRtcUid)],
-				enable_string_uid: true,
+				enable_string_uid: !isNumericUid,
 				idle_timeout: caeIdleTimeout,
 				llm: {
 					url: caeLlmUrl,
@@ -239,7 +244,11 @@ app.post("/conversationalAgent/start", async (req, res) => {
 					system_messages: [{ role: "system", content: caeSystemMessage }],
 					greeting_message: caeGreetingMessage,
 					failure_message: caeFailureMessage,
-					params: { model: caeLlmModel },
+					params: {
+						model: caeLlmModel,
+						temperature: 0.2,
+						max_tokens: 150,
+					},
 				},
 				asr: {
 					language: caeAsrLanguage,
@@ -265,6 +274,14 @@ app.post("/conversationalAgent/start", async (req, res) => {
 
 		let response;
 		try {
+			console.log(
+				"[CAE] Sending request to Agora API:",
+				JSON.stringify(
+					{ url: joinUrl, payloadKeys: Object.keys(payload) },
+					null,
+					2,
+				),
+			);
 			response = await fetch(joinUrl, {
 				method: "POST",
 				headers: {
@@ -279,12 +296,27 @@ app.post("/conversationalAgent/start", async (req, res) => {
 		}
 
 		const data = await response.json();
+		console.log(
+			"[CAE] Agora API response status:",
+			response.status,
+			"body:",
+			JSON.stringify(data, null, 2),
+		);
+
 		if (!response.ok) {
+			const agoraError =
+				data?.message ||
+				data?.error ||
+				data?.msg ||
+				"Failed to start Conversational AI agent.";
+			console.error(
+				"[CAE] Agora API error:",
+				agoraError,
+				"details:",
+				JSON.stringify(data, null, 2),
+			);
 			return res.status(response.status).json({
-				error:
-					data?.message ||
-					data?.error ||
-					"Failed to start Conversational AI agent.",
+				error: agoraError,
 				details: data,
 			});
 		}

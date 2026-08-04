@@ -16,37 +16,20 @@ const TRIAGE_RESULT_STORAGE_KEY = "patient-triage-analysis";
 
 function PatientTriage({ onNewCase }) {
 	const [isListening, setIsListening] = useState(false);
-	const [transcript, setTranscript] = useState("");
-	const [interimText, setInterimText] = useState("");
+	const [chatLog, setChatLog] = useState([]);
 	const [analysis, setAnalysis] = useState(null);
 	const [error, setError] = useState("");
-	const [isAnalyzing, setIsAnalyzing] = useState(false);
-	const [followUpState, setFollowUpState] = useState("idle");
-	const [followUpQuestion, setFollowUpQuestion] = useState("");
-	const [followUpTranscript, setFollowUpTranscript] = useState("");
-	const [followUpInterim, setFollowUpInterim] = useState("");
-	const [followUpContext, setFollowUpContext] = useState({
-		question: "",
-		answer: "",
-	});
 	const [caeStatus, setCaeStatus] = useState("idle");
 	const [caeErrorText, setCaeErrorText] = useState("");
 
 	const agoraClientRef = useRef(null);
 	const localTrackRef = useRef(null);
 	const caeAgentIdRef = useRef(null);
-	const followUpTranscriptRef = useRef("");
-	const followUpInterimRef = useRef("");
-	const baseSymptomsRef = useRef("");
-	const triageRoundRef = useRef(0);
-	const ttsAudioRef = useRef(null);
-	const ttsAbortRef = useRef(null);
-	const ttsObjectUrlRef = useRef("");
+	const chatLogRef = useRef(null);
 	const isStreamingRef = useRef(false);
-	const followUpStateRef = useRef("idle");
-	const transcriptRef = useRef("");
 	const streamChunksRef = useRef({});
-
+	const activeUserMsgIdRef = useRef(null);
+	const activeAiMsgIdRef = useRef(null);
 	useEffect(() => {
 		try {
 			const raw = localStorage.getItem(TRIAGE_RESULT_STORAGE_KEY);
@@ -54,9 +37,6 @@ function PatientTriage({ onNewCase }) {
 			const saved = JSON.parse(raw);
 			if (saved?.analysis) {
 				setAnalysis(saved.analysis);
-			}
-			if (saved?.followUpContext) {
-				setFollowUpContext(saved.followUpContext);
 			}
 		} catch {
 			localStorage.removeItem(TRIAGE_RESULT_STORAGE_KEY);
@@ -70,75 +50,25 @@ function PatientTriage({ onNewCase }) {
 		}
 		localStorage.setItem(
 			TRIAGE_RESULT_STORAGE_KEY,
-			JSON.stringify({
-				analysis,
-				followUpContext,
-			}),
+			JSON.stringify({ analysis }),
 		);
-	}, [analysis, followUpContext]);
+	}, [analysis]);
 
 	useEffect(() => {
 		return () => {
 			cleanupAgora();
-			if (ttsAbortRef.current) ttsAbortRef.current.abort();
-			if (ttsAudioRef.current) {
-				ttsAudioRef.current.pause();
-				ttsAudioRef.current.src = "";
-			}
-			if (ttsObjectUrlRef.current) URL.revokeObjectURL(ttsObjectUrlRef.current);
 		};
 	}, []);
 
+	// Auto-scroll chat log to the latest message
+	useEffect(() => {
+		if (chatLogRef.current) {
+			chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight;
+		}
+	}, [chatLog]);
+
 	const deleteTriageResult = () => {
 		setAnalysis(null);
-		setFollowUpContext({ question: "", answer: "" });
-	};
-
-	const speakText = async (text) => {
-		if (!String(text || "").trim()) return;
-		setError("");
-		try {
-			if (ttsAbortRef.current) ttsAbortRef.current.abort();
-			if (ttsAudioRef.current) {
-				ttsAudioRef.current.pause();
-				ttsAudioRef.current.src = "";
-			}
-			if (ttsObjectUrlRef.current) {
-				URL.revokeObjectURL(ttsObjectUrlRef.current);
-				ttsObjectUrlRef.current = "";
-			}
-
-			const controller = new AbortController();
-			ttsAbortRef.current = controller;
-			const localeHint = navigator.language || "en-US";
-			const response = await fetch(`${API_BASE_URL}/speech/synthesize`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ text, locale: localeHint }),
-				signal: controller.signal,
-			});
-			if (!response.ok) {
-				const data = await response.json().catch(() => ({}));
-				throw new Error(data.error || "Text-to-speech request failed.");
-			}
-			const audioBlob = await response.blob();
-			const audioUrl = URL.createObjectURL(audioBlob);
-			ttsObjectUrlRef.current = audioUrl;
-			const audio = new Audio(audioUrl);
-			ttsAudioRef.current = audio;
-			audio.onended = () => {
-				if (ttsObjectUrlRef.current)
-					URL.revokeObjectURL(ttsObjectUrlRef.current);
-				ttsObjectUrlRef.current = "";
-			};
-			await audio.play();
-		} catch (error) {
-			if (error?.name !== "AbortError") {
-				setError(error?.message || "Unable to play synthesized speech.");
-			}
-		} finally {
-			ttsAbortRef.current = null;
-		}
 	};
 
 	const startConversationalAgent = async (remoteRtcUid) => {
@@ -187,8 +117,17 @@ function PatientTriage({ onNewCase }) {
 				},
 			);
 			const data = await response.json();
+			console.log(
+				"[CAE] Start response:",
+				response.status,
+				JSON.stringify(data, null, 2),
+			);
 			if (!response.ok)
-				throw new Error(data.error || "Failed to start conversational agent.");
+				throw new Error(
+					data.error ||
+						data.details?.message ||
+						"Failed to start conversational agent.",
+				);
 			if (!data.enabled) {
 				setCaeStatus("disabled");
 				const issuesText =
@@ -264,16 +203,16 @@ function PatientTriage({ onNewCase }) {
 			});
 
 			const micTrack = await AgoraRTC.createMicrophoneAudioTrack();
+			const safeUid = Math.floor(Math.random() * 2147483647) + 1;
 			const localUid = await client.join(
 				AGORA_APP_ID,
 				AGORA_CHANNEL,
 				AGORA_TOKEN,
-				null,
+				safeUid,
 			);
 			await client.publish([micTrack]);
 			agoraClientRef.current = client;
 			localTrackRef.current = micTrack;
-			transcriptRef.current = "";
 			isStreamingRef.current = true;
 			setIsListening(true);
 			await startConversationalAgent(localUid);
@@ -304,7 +243,6 @@ function PatientTriage({ onNewCase }) {
 			agoraClientRef.current = null;
 			isStreamingRef.current = false;
 			setIsListening(false);
-			setInterimText("");
 		}
 	};
 
@@ -330,10 +268,7 @@ function PatientTriage({ onNewCase }) {
 			if (typeof input === "string") return input;
 			if (input instanceof ArrayBuffer || input instanceof Uint8Array) {
 				try {
-					const decoded = new TextDecoder().decode(input);
-					// Skip binary gibberish (only allow printable ASCII + newlines)
-					if (/[^\x20-\x7E\n\r]/.test(decoded)) return null;
-					return decoded;
+					return new TextDecoder().decode(input);
 				} catch {
 					return null;
 				}
@@ -348,13 +283,39 @@ function PatientTriage({ onNewCase }) {
 			const [msgId, chunkIndexStr, totalChunksStr, ...rest] = parts;
 			const chunkIndex = parseInt(chunkIndexStr, 10);
 			const totalChunks = parseInt(totalChunksStr, 10);
-			if (isNaN(chunkIndex) || isNaN(totalChunks) || chunkIndex < 1 || totalChunks < 1)
+			if (
+				isNaN(chunkIndex) ||
+				isNaN(totalChunks) ||
+				chunkIndex < 1 ||
+				totalChunks < 1
+			)
 				return null;
 			return { msgId, chunkIndex, totalChunks, base64Payload: rest.join("|") };
 		};
 
+		/** Upsert a message into chatLog (update by id, or append). */
+		const upsertMessage = (id, role, text, isFinal) => {
+			setChatLog((prev) => {
+				const idx = prev.findIndex((m) => m.id === id);
+				if (idx >= 0) {
+					const next = [...prev];
+					next[idx] = { ...next[idx], text, isFinal };
+					return next;
+				}
+				return [...prev, { id, role, text, isFinal }];
+			});
+		};
+
 		const raw = getRawString(data);
-		if (!raw) return;
+		if (!raw) {
+			console.log(
+				"[CAE] Stream message could not be decoded as string from uid:",
+				uid,
+				"type:",
+				typeof data,
+			);
+			return;
+		}
 
 		// --- Attempt chunked stream message parsing first ---
 		const chunked = tryChunkedMessage(raw);
@@ -402,32 +363,25 @@ function PatientTriage({ onNewCase }) {
 					return;
 				}
 
-				const extractedText = parsed.text || parsed.transcript || "";
-				if (!extractedText) return;
+				console.log("Agora Stream Payload:", parsed);
 
-				// Ignore AI speech — only the patient's (user) transcription goes to the UI transcript.
-				if (parsed.object === "assistant.transcription") return;
-				if (parsed.object !== "user.transcription") return;
+				const text = parsed.text || parsed.transcript || "";
+				if (!text) return;
 
-				// Final only when turn_status === 1 (END); otherwise treat as interim (IN_PROGRESS).
+				const role =
+					parsed.object === "assistant.transcription" ? "ai" : "user";
 				const isFinal = parsed.turn_status === 1;
+				const turnId = parsed.turn_id;
+				const stableId =
+					turnId !== undefined
+						? `${role}_turn_${turnId}`
+						: `${role}_current_turn`;
 
-				if (isFinal) {
-					transcriptRef.current =
-						`${transcriptRef.current}${extractedText} `.trim();
-					setTranscript(transcriptRef.current);
+				upsertMessage(stableId, role, text, isFinal);
 
-					if (followUpStateRef.current === "listening") {
-						followUpTranscriptRef.current =
-							`${followUpTranscriptRef.current}${extractedText} `.trim();
-						setFollowUpTranscript(followUpTranscriptRef.current);
-					}
-				} else {
-					setInterimText(extractedText);
-					if (followUpStateRef.current === "listening") {
-						followUpInterimRef.current = extractedText;
-						setFollowUpInterim(extractedText);
-					}
+				if (isFinal && turnId === undefined) {
+					const ref = role === "user" ? activeUserMsgIdRef : activeAiMsgIdRef;
+					ref.current = null;
 				}
 			}
 			return; // fully handled chunked message
@@ -435,6 +389,7 @@ function PatientTriage({ onNewCase }) {
 
 		// --- Fallback: plain JSON / raw string ---
 		let text = "";
+		let role = "user";
 		let isFinal = true;
 
 		const tryParse = (raw) => {
@@ -442,14 +397,17 @@ function PatientTriage({ onNewCase }) {
 				const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
 				const msgType = String(parsed.type || "").toLowerCase();
 				if (msgType && msgType !== "transcription") return null;
-				// Ignore AI speech — only the patient's (user) transcription is shown.
-				if (parsed.object === "assistant.transcription") return { ignored: true };
-				if (parsed.object && parsed.object !== "user.transcription") return { ignored: true };
-				return {
-					text: parsed.text || parsed.transcript || parsed.data || "",
-					// Final only when turn_status === 1 (END); otherwise interim (IN_PROGRESS).
-					isFinal: parsed.turn_status === 1,
-				};
+				const text = parsed.text || parsed.transcript || parsed.data || "";
+				const role =
+					parsed.object === "user.transcription"
+						? "user"
+						: parsed.object === "assistant.transcription"
+							? "ai"
+							: null;
+				if (parsed.object && !role) return { ignored: true };
+				const isFinal = parsed.turn_status === 1;
+				const turnId = parsed.turn_id;
+				return { text, role: role || "user", isFinal, turnId };
 			} catch {
 				return null;
 			}
@@ -459,29 +417,31 @@ function PatientTriage({ onNewCase }) {
 		if (result?.ignored) return;
 		if (result) {
 			text = result.text;
+			role = result.role || "user";
 			isFinal = result.isFinal;
+			const turnId = result.turnId;
+
+			const stableId =
+				turnId !== undefined
+					? `${role}_turn_${turnId}`
+					: `${role}_current_turn`;
+
+			upsertMessage(stableId, role, text, isFinal);
+
+			if (isFinal && turnId === undefined) {
+				const ref = role === "user" ? activeUserMsgIdRef : activeAiMsgIdRef;
+				ref.current = null;
+			}
 		} else {
 			text = raw;
 		}
 
 		if (!text) return;
 
-		if (isFinal) {
-			transcriptRef.current = `${transcriptRef.current}${text} `.trim();
-			setTranscript(transcriptRef.current);
-
-			if (followUpStateRef.current === "listening") {
-				followUpTranscriptRef.current =
-					`${followUpTranscriptRef.current}${text} `.trim();
-				setFollowUpTranscript(followUpTranscriptRef.current);
-			}
-		} else {
-			setInterimText(text);
-			if (followUpStateRef.current === "listening") {
-				followUpInterimRef.current = text;
-				setFollowUpInterim(text);
-			}
-		}
+		const fallbackId = `msg_${Date.now()}_${Math.random()
+			.toString(36)
+			.slice(2, 8)}`;
+		upsertMessage(fallbackId, role, text, isFinal);
 	};
 
 	const toggleTriage = async () => {
@@ -492,18 +452,9 @@ function PatientTriage({ onNewCase }) {
 			return;
 		}
 		try {
-			setTranscript("");
-			setInterimText("");
+			setChatLog([]);
+			chatLogRef.current = null;
 			setAnalysis(null);
-			setFollowUpState("idle");
-			followUpStateRef.current = "idle";
-			setFollowUpQuestion("");
-			setFollowUpTranscript("");
-			setFollowUpInterim("");
-			setFollowUpContext({ question: "", answer: "" });
-			baseSymptomsRef.current = "";
-			transcriptRef.current = "";
-			triageRoundRef.current = 0;
 			setCaeStatus("starting");
 			setCaeErrorText("");
 			await startAgoraStreaming();
@@ -514,108 +465,6 @@ function PatientTriage({ onNewCase }) {
 			console.error(e);
 			isStreamingRef.current = false;
 			await cleanupAgora();
-		}
-	};
-
-	const startFollowUpListening = () => {
-		setError("");
-		setFollowUpTranscript("");
-		setFollowUpInterim("");
-		followUpTranscriptRef.current = "";
-		followUpInterimRef.current = "";
-		setFollowUpState("listening");
-		followUpStateRef.current = "listening";
-	};
-
-	const stopFollowUpAndAnalyze = async () => {
-		followUpStateRef.current = "idle";
-		setFollowUpState("idle");
-
-		const answer =
-			`${followUpTranscriptRef.current} ${followUpInterimRef.current}`.trim();
-
-		if (!answer) {
-			setError(
-				"I didn't catch your answer. Please tap 'Answer by Voice' and try again.",
-			);
-			setFollowUpState("asking");
-			followUpStateRef.current = "asking";
-			return;
-		}
-
-		setError("");
-		setFollowUpContext({ question: followUpQuestion, answer });
-		if (answer) {
-			await runAnalysis(answer);
-		}
-	};
-
-	const runAnalysis = async (followUpAnswer = "") => {
-		const fullTranscript = `${transcript} ${interimText}`.trim();
-
-		if (!followUpAnswer && !fullTranscript) {
-			setError("Please describe symptoms first before analysis.");
-			return;
-		}
-
-		if (!followUpAnswer) {
-			isStreamingRef.current = false;
-			setIsListening(false);
-			baseSymptomsRef.current = fullTranscript;
-			triageRoundRef.current = 0;
-			setFollowUpContext({ question: "", answer: "" });
-		}
-
-		setError("");
-		setIsAnalyzing(true);
-		setFollowUpState("idle");
-		followUpStateRef.current = "idle";
-
-		try {
-			const response = await fetch(`${API_BASE_URL}/analyzeSymptoms`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					symptoms: baseSymptomsRef.current,
-					...(followUpAnswer ? { context: followUpAnswer } : {}),
-				}),
-			});
-
-			const data = await response.json();
-			if (!response.ok)
-				throw new Error(data.error || "Failed to analyze symptoms");
-
-			triageRoundRef.current += 1;
-			setAnalysis(data);
-
-			const hasFollowUp =
-				Array.isArray(data.missing_info_questions) &&
-				data.missing_info_questions.length > 0;
-			const shouldAsk =
-				hasFollowUp && triageRoundRef.current < 2 && !followUpAnswer;
-
-			if (shouldAsk) {
-				const question = data.missing_info_questions[0];
-				setFollowUpQuestion(question);
-				setFollowUpContext((prev) => ({ ...prev, question, answer: "" }));
-				setFollowUpState("asking");
-				followUpStateRef.current = "asking";
-				setTimeout(() => speakText(question), 600);
-			} else {
-				const finalText = followUpAnswer
-					? `${baseSymptomsRef.current}. ${followUpAnswer}`
-					: baseSymptomsRef.current;
-				onNewCase({
-					...data,
-					transcript: finalText,
-					follow_up_question: followUpAnswer ? followUpQuestion : "",
-					follow_up_answer: followUpAnswer || "",
-				});
-			}
-		} catch (e) {
-			setError(e.message);
-		} finally {
-			setIsAnalyzing(false);
 		}
 	};
 
@@ -669,96 +518,56 @@ function PatientTriage({ onNewCase }) {
 										? `Conversational AI agent is disabled.${caeErrorText ? ` ${caeErrorText}` : ""}`
 										: ""}
 					</p>
-
-					<button
-						onClick={() => runAnalysis()}
-						disabled={isAnalyzing}
-						className="mt-4 rounded-xl bg-blue-600 px-6 py-2 font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-					>
-						{isAnalyzing ? "Analyzing..." : "Analyze Symptoms"}
-					</button>
 				</div>
 
 				<div className="flex flex-col rounded-3xl border border-slate-200 bg-white/90 p-5 shadow-sm">
 					<div className="mb-3 flex items-center justify-between">
 						<h3 className="font-headline text-lg font-semibold text-slate-900">
-							Transcript
+							Live Chat
 						</h3>
 						<span
 							className={`rounded-full px-3 py-1 text-xs font-semibold ${
 								isListening
 									? "bg-emerald-100 text-emerald-700"
-									: transcript
-										? "bg-blue-100 text-blue-700"
-										: "bg-slate-100 text-slate-500"
+									: "bg-slate-100 text-slate-500"
 							}`}
 						>
-							{isListening
-								? "● Listening..."
-								: transcript
-									? "Editable"
-									: "Idle"}
+							{isListening ? "● Live" : "Idle"}
 						</span>
 					</div>
 
-					{!isListening ? (
-						<>
-							<textarea
-								className="min-h-36 w-full flex-1 resize-y rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-400"
-								value={transcript}
-								onChange={(e) => setTranscript(e.target.value)}
-								placeholder="Edit the transcript here to fix any speech-to-text mistakes..."
-							/>
-							<p className="mt-1 text-xs text-slate-400">
-								You can edit before clicking Analyze Symptoms.
+					<div
+						ref={chatLogRef}
+						className="flex max-h-80 min-h-48 flex-col space-y-3 overflow-y-auto rounded-xl bg-slate-50 p-4"
+					>
+						{chatLog.length === 0 ? (
+							<p className="py-8 text-center text-sm text-slate-400">
+								Conversation with the AI assistant will appear here...
 							</p>
-						</>
-					) : (
-						<p className="min-h-24 text-sm text-slate-700">
-							{`${transcript} ${interimText}`.trim() ||
-								"Patient speech will appear here as they speak."}
-						</p>
-					)}
+						) : (
+							chatLog.map((msg) => (
+								<div
+									key={msg.id}
+									className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+								>
+									<div
+										className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm leading-relaxed ${
+											msg.role === "user"
+												? "rounded-br-sm bg-blue-500 text-white"
+												: "rounded-bl-sm bg-white text-slate-800 shadow-sm"
+										} ${msg.isFinal ? "" : "opacity-60"}`}
+									>
+										{msg.text}
+										{!msg.isFinal && (
+											<span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-current align-text-bottom" />
+										)}
+									</div>
+								</div>
+							))
+						)}
+					</div>
 				</div>
 			</div>
-
-			{followUpState === "asking" && (
-				<div className="space-y-3 rounded-2xl border border-blue-200 bg-blue-50 p-5">
-					<p className="text-xs font-bold uppercase tracking-wide text-blue-500">
-						Follow-up Question
-					</p>
-					<p className="text-lg font-semibold text-blue-900">
-						"{followUpQuestion}"
-					</p>
-					<button
-						onClick={startFollowUpListening}
-						className="rounded-xl bg-blue-600 px-5 py-2 text-sm font-semibold text-white transition hover:bg-blue-700"
-					>
-						Answer by Voice
-					</button>
-				</div>
-			)}
-
-			{followUpState === "listening" && (
-				<div className="space-y-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-5">
-					<div className="flex items-center gap-2">
-						<span className="inline-block h-2.5 w-2.5 animate-pulse rounded-full bg-emerald-500" />
-						<p className="text-sm font-bold uppercase tracking-wide text-emerald-700">
-							Listening for answer…
-						</p>
-					</div>
-					<p className="min-h-8 italic text-slate-700">
-						{`${followUpTranscript} ${followUpInterim}`.trim() ||
-							"Speak your answer now."}
-					</p>
-					<button
-						onClick={stopFollowUpAndAnalyze}
-						className="rounded-xl bg-emerald-600 px-5 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700"
-					>
-						Done Answering
-					</button>
-				</div>
-			)}
 
 			{error && (
 				<div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-red-700">
@@ -839,22 +648,6 @@ function PatientTriage({ onNewCase }) {
 								</ul>
 							</div>
 						)}
-
-					{followUpContext.question && followUpContext.answer && (
-						<div className="rounded-xl border border-blue-200 bg-blue-50 p-3">
-							<p className="text-xs font-bold uppercase tracking-wide text-blue-600">
-								Follow-up Context Used
-							</p>
-							<p className="mt-1 text-sm text-slate-800">
-								<span className="font-semibold">Question:</span>{" "}
-								{followUpContext.question}
-							</p>
-							<p className="mt-1 text-sm text-slate-800">
-								<span className="font-semibold">Patient answer:</span>{" "}
-								{followUpContext.answer}
-							</p>
-						</div>
-					)}
 
 					<p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
 						⚠️ This tool determines appointment scheduling priority only. It
