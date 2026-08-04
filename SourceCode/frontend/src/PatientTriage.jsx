@@ -487,7 +487,7 @@ function PatientTriage({ onNewCase }) {
 		try {
 			// Build the chat log from current state
 			const currentChatLog = latestChatLogRef.current
-				.filter((m) => m.isFinal && m.text)
+				.filter((m) => m.text && m.text.trim() !== "")
 				.map((m) => ({ role: m.role, text: m.text }));
 
 			if (currentChatLog.length === 0) return;

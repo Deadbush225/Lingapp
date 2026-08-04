@@ -600,6 +600,17 @@ Rules:
 	}
 });
 
+// ── Doctor Queue: Fetch most recent triage cases ──────────────────
+app.get("/api/triage/queue", async (req, res) => {
+	try {
+		const cases = await TriageCase.find().sort({ createdAt: -1 }).limit(10);
+		res.json(cases);
+	} catch (error) {
+		console.error("[Backend] Fetch queue error:", error);
+		res.status(500).json({ error: "Failed to fetch doctor queue" });
+	}
+});
+
 const isVercel = Boolean(process.env.VERCEL);
 
 if (!isVercel) {
