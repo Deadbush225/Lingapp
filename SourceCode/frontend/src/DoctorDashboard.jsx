@@ -15,6 +15,11 @@ function DoctorDashboard() {
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
 
+	const totalCases = cases.length;
+	const highUrgency = cases.filter((c) => c.urgency === "HIGH").length;
+	const mediumUrgency = cases.filter((c) => c.urgency === "MEDIUM").length;
+	const lowUrgency = cases.filter((c) => c.urgency === "LOW").length;
+
 	useEffect(() => {
 		const fetchQueue = async () => {
 			try {
@@ -48,6 +53,18 @@ function DoctorDashboard() {
 		}
 	};
 
+	const handleDelete = async (caseId) => {
+		try {
+			const res = await fetch(`${API_BASE_URL}/api/triage/case/${caseId}`, {
+				method: "DELETE",
+			});
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			setCases((prev) => prev.filter((c) => c.caseId !== caseId));
+		} catch (err) {
+			console.error("[DoctorDashboard] Delete error:", err);
+		}
+	};
+
 	return (
 		<section className="space-y-4">
 			<div className="rounded-3xl border border-slate-200 bg-white/85 p-5 shadow-sm">
@@ -57,6 +74,34 @@ function DoctorDashboard() {
 				<p className="text-slate-600">
 					Top 10 most recent triage cases, sorted by submission date.
 				</p>
+			</div>
+
+			{/* ── Summary Counters ──────────────────────────────────────── */}
+			<div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+				<div className="rounded-2xl border border-slate-200 bg-white/85 p-4 text-center shadow-sm">
+					<p className="text-3xl font-bold text-slate-900">{totalCases}</p>
+					<p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+						Total
+					</p>
+				</div>
+				<div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-center shadow-sm">
+					<p className="text-3xl font-bold text-red-700">{highUrgency}</p>
+					<p className="text-xs font-semibold uppercase tracking-wide text-red-600">
+						High
+					</p>
+				</div>
+				<div className="rounded-2xl border border-orange-200 bg-orange-50 p-4 text-center shadow-sm">
+					<p className="text-3xl font-bold text-orange-700">{mediumUrgency}</p>
+					<p className="text-xs font-semibold uppercase tracking-wide text-orange-600">
+						Medium
+					</p>
+				</div>
+				<div className="rounded-2xl border border-green-200 bg-green-50 p-4 text-center shadow-sm">
+					<p className="text-3xl font-bold text-green-700">{lowUrgency}</p>
+					<p className="text-xs font-semibold uppercase tracking-wide text-green-600">
+						Low
+					</p>
+				</div>
 			</div>
 
 			{loading && (
@@ -102,8 +147,16 @@ function DoctorDashboard() {
 								{item.recommendation}
 							</div>
 
-							<div className="mt-3 text-xs text-slate-400">
-								Submitted: {formatDate(item.createdAt)}
+							<div className="mt-3 flex items-center justify-between gap-3">
+								<div className="text-xs text-slate-400">
+									Submitted: {formatDate(item.createdAt)}
+								</div>
+								<button
+									onClick={() => handleDelete(item.caseId)}
+									className="rounded-lg bg-red-600 px-3 py-1 text-xs font-semibold text-white hover:bg-red-700"
+								>
+									Delete
+								</button>
 							</div>
 						</article>
 					))}

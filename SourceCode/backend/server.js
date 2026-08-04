@@ -611,6 +611,19 @@ app.get("/api/triage/queue", async (req, res) => {
 	}
 });
 
+// ── Delete a triage case from MongoDB ────────────────────────────
+app.delete("/api/triage/case/:caseId", async (req, res) => {
+	try {
+		const { caseId } = req.params;
+		const deleted = await TriageCase.findOneAndDelete({ caseId });
+		if (!deleted) return res.status(404).json({ error: "Case not found" });
+		res.json({ success: true });
+	} catch (error) {
+		console.error("[Backend] Delete case error:", error);
+		res.status(500).json({ error: "Failed to delete case" });
+	}
+});
+
 const isVercel = Boolean(process.env.VERCEL);
 
 if (!isVercel) {

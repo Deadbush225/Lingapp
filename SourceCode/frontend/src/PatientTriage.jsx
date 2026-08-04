@@ -70,8 +70,18 @@ function PatientTriage({ onNewCase }) {
 		}
 	}, [chatLog]);
 
-	const deleteTriageResult = () => {
+	const deleteTriageResult = async () => {
+		if (analysis?.caseId) {
+			try {
+				await fetch(`${API_BASE_URL}/api/triage/case/${analysis.caseId}`, {
+					method: "DELETE",
+				});
+			} catch (error) {
+				console.error("Failed to delete result from DB:", error);
+			}
+		}
 		setAnalysis(null);
+		setIsTriageComplete(false);
 	};
 
 	const startConversationalAgent = async (remoteRtcUid) => {
