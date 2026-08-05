@@ -8,15 +8,27 @@ import TriageCase from "./models/TriageCase.js";
 
 dotenv.config();
 
-// ── Connect to MongoDB ─────────────────────────────────────────────
-const mongoUri = process.env.MONGODB_URI;
-if (mongoUri) {
-	mongoose
-		.connect(mongoUri)
-		.then(() => console.log(" Connected to MongoDB successfully"))
-		.catch((err) => console.error(" MongoDB connection error:", err));
-} else {
-	console.warn("⚠️ MONGODB_URI is not defined in .env file!");
+// ── Connect to MongoDB (serverless-friendly, cached & awaited) ────
+// Cache the connection on `global` so it survives across Vercel
+// serverless warm invocations, avoiding cold-start reconnection races.
+let cached = global.mongoose;
+if (!cached) cached = global.mongoose = { conn: null, promise: null };
+
+async function connectDB() {
+	if (cached.conn) return cached.conn;
+	if (!process.env.MONGODB_URI) {
+		throw new Error("MONGODB_URI is not defined in environment variables!");
+	}
+	if (!cached.promise) {
+		cached.promise = mongoose
+			.connect(process.env.MONGODB_URI, { bufferCommands: false })
+			.then((m) => {
+				console.log(" Connected to MongoDB successfully");
+				return m;
+			});
+	}
+	cached.conn = await cached.promise;
+	return cached.conn;
 }
 // ──────────────────────────────────────────────────────────────────
 
@@ -454,6 +466,7 @@ app.post("/analyzeSymptoms", analyzeSymptomsController);
 // ── Triage Pipeline: Process Chat Log & Queue for Doctor ──────────
 app.post("/api/triage/process-and-queue", async (req, res) => {
 	try {
+		await connectDB();
 		const { chatLog } = req.body || {};
 		console.log(
 			"[DEBUG Backend] Endpoint hit. chatLog received count:",
@@ -614,6 +627,7 @@ Rules:
 // ── Doctor Queue: Fetch most recent triage cases ──────────────────
 app.get("/api/triage/queue", async (req, res) => {
 	try {
+		await connectDB();
 		const cases = await TriageCase.find().sort({ createdAt: -1 }).limit(10);
 		res.json(cases);
 	} catch (error) {
@@ -625,6 +639,7 @@ app.get("/api/triage/queue", async (req, res) => {
 // ── Delete a triage case from MongoDB ────────────────────────────
 app.delete("/api/triage/case/:caseId", async (req, res) => {
 	try {
+		await connectDB();
 		const { caseId } = req.params;
 		const deleted = await TriageCase.findOneAndDelete({ caseId });
 		if (!deleted) return res.status(404).json({ error: "Case not found" });
