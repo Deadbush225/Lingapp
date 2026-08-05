@@ -2,7 +2,8 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import mongoose from "mongoose";
-import { RtcTokenBuilder, RtcRole } from "agora-access-token";
+import agoraToken from "agora-access-token";
+const { RtcTokenBuilder, RtcRole } = agoraToken;
 import { analyzeSymptomsController } from "./triageController.js";
 import TriageCase from "./models/TriageCase.js";
 
