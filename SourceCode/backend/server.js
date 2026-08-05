@@ -242,17 +242,30 @@ app.post("/conversationalAgent/start", async (req, res) => {
 			});
 		}
 
-		const { channel, token, remoteRtcUid } = req.body || {};
+		const { channel, remoteRtcUid } = req.body || {};
 		if (!channel || !remoteRtcUid) {
 			return res
 				.status(400)
 				.json({ error: "channel and remoteRtcUid are required" });
 		}
-		if (!token) {
+
+		// Generate a dedicated token for the Agent (UID 0)
+		const appCertificate = process.env.AGORA_APP_CERTIFICATE;
+		if (!appCertificate) {
 			return res
-				.status(400)
-				.json({ error: "token is required for Conversational AI agent start" });
+				.status(500)
+				.json({ error: "AGORA_APP_CERTIFICATE is missing on server" });
 		}
+		const currentTimestamp = Math.floor(Date.now() / 1000);
+		const agentToken = RtcTokenBuilder.buildTokenWithUid(
+			agoraAppId,
+			appCertificate,
+			channel,
+			0, // Agent UID
+			RtcRole.PUBLISHER,
+			currentTimestamp + 3600,
+		);
+
 		const ttsParams = parseTtsParams();
 		if (!hasRequiredTtsConfig(ttsParams)) {
 			return res.status(400).json({
@@ -272,7 +285,7 @@ app.post("/conversationalAgent/start", async (req, res) => {
 			name: `triage-agent-${Date.now()}`,
 			properties: {
 				channel,
-				token: token || null,
+				token: agentToken,
 				agent_rtc_uid: "0",
 				remote_rtc_uids: [String(remoteRtcUid)],
 				enable_string_uid: !isNumericUid,
