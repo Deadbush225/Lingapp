@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import AgoraRTC from "agora-rtc-sdk-ng";
 import UrgencyBadge from "./components/UrgencyBadge";
 
+// Disable Agora SDK console logging (DEBUG/INFO noise)
+AgoraRTC.setLogLevel(AgoraRTC.LogLevel.NONE);
+
 const API_BASE_URL =
 	import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
 const AGORA_APP_ID = import.meta.env.VITE_AGORA_APP_ID;
