@@ -16,12 +16,6 @@ const SESSION_DURATION_MS = 300000; // 5 minutes hard limit
 const SESSION_WARNING_MS = 30000; // warn user 30 seconds before timeout
 const TRIAGE_RESULT_STORAGE_KEY = "patient-triage-analysis";
 
-console.log("API_BASE_URL:", API_BASE_URL);
-console.log("AGORA_APP_ID:", AGORA_APP_ID);
-console.log("AGORA_CHANNEL:", AGORA_CHANNEL);
-console.log("ENABLE_CONVERSATIONAL_AI:", ENABLE_CONVERSATIONAL_AI);
-console.log("TURNSTILE_SITE_KEY:", TURNSTILE_SITE_KEY);
-
 function PatientTriage({ onNewCase }) {
 	const [isListening, setIsListening] = useState(false);
 	const [chatLog, setChatLog] = useState([]);
@@ -200,11 +194,6 @@ function PatientTriage({ onNewCase }) {
 				},
 			);
 			const data = await response.json();
-			console.log(
-				"[CAE] Start response:",
-				response.status,
-				JSON.stringify(data, null, 2),
-			);
 			if (!response.ok)
 				throw new Error(
 					data.error ||
@@ -466,12 +455,6 @@ function PatientTriage({ onNewCase }) {
 
 		const raw = getRawString(data);
 		if (!raw) {
-			console.log(
-				"[CAE] Stream message could not be decoded as string from uid:",
-				uid,
-				"type:",
-				typeof data,
-			);
 			return;
 		}
 
@@ -520,8 +503,6 @@ function PatientTriage({ onNewCase }) {
 					);
 					return;
 				}
-
-				console.log("Agora Stream Payload:", parsed);
 
 				const text = parsed.text || parsed.transcript || "";
 				if (!text) return;
@@ -677,13 +658,6 @@ function PatientTriage({ onNewCase }) {
 
 			if (currentChatLog.length === 0) return;
 
-			console.log("[Triage] Processing and queuing report...");
-
-			console.log(
-				"[DEBUG Frontend] Sending chatLog to backend:",
-				currentChatLog,
-			);
-
 			const response = await fetch(
 				`${API_BASE_URL}/api/triage/process-and-queue`,
 				{
@@ -693,16 +667,11 @@ function PatientTriage({ onNewCase }) {
 				},
 			);
 
-			console.log("[DEBUG Frontend] Backend response status:", response.status);
-
 			const report = await response.json();
-			console.log("[DEBUG Frontend] Backend response data:", report);
 
 			if (!response.ok) {
 				throw new Error(report.error || `HTTP ${response.status}`);
 			}
-
-			console.log("[Triage] Report received:", report);
 
 			// Set the analysis state to render the triage result card
 			setAnalysis({
